@@ -75,14 +75,32 @@ async def _init_sqlite():
                 user_id INTEGER PRIMARY KEY,
                 banned INTEGER DEFAULT 1
             );
+            CREATE TABLE IF NOT EXISTS panel_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE,
+                password TEXT
+            );
         """)
         await conn.commit()
     print("✅ SQLite initialised at", sqlite_path)
 
 
 async def init_db():
+    import logging
+    log = logging.getLogger(__name__)
     if settings.MONGO:
-        await _init_mongo()
+        # Retry up to 5 times — Render cold starts can be slow
+        for attempt in range(1, 6):
+            try:
+                await _init_mongo()
+                if db is not None:
+                    return
+                raise RuntimeError("Motor client is None after init")
+            except Exception as e:
+                log.warning(f"MongoDB init attempt {attempt}/5 failed: {e}")
+                if attempt < 5:
+                    await __import__("asyncio").sleep(3)
+        raise RuntimeError("MongoDB failed to initialise after 5 attempts — check MONGO_URI")
     else:
         await _init_sqlite()
 
