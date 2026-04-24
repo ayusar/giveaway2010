@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ─── Poll restore on restart ──────────────────────────────────
+# ─── Poll restore onrestart ──────────────────────────────────
 
 async def _restore_active_polls(bot: Bot):
     from utils.db import get_db, is_mongo, get_sqlite_path
