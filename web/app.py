@@ -31,16 +31,32 @@ def _is_auth(token):
 # ══════════════════════════════════════════════════════════════
 
 async def _check_creds(username, password):
-    from utils.db import get_db, is_mongo, get_sqlite_path
-    hashed = _hash_pw(password)
-    if is_mongo():
-        return bool(await get_db().panel_users.find_one({"username": username, "password": hashed}))
-    import aiosqlite
-    async with aiosqlite.connect(get_sqlite_path()) as conn:
-        async with conn.execute(
-            "SELECT id FROM panel_users WHERE username=? AND password=?", (username, hashed)
-        ) as cur:
-            return await cur.fetchone() is not None
+    try:
+        from utils.db import get_db, is_mongo, get_sqlite_path
+        hashed = _hash_pw(password)
+        if is_mongo():
+            db = get_db()
+            if db is None:
+                import logging
+                logging.getLogger(__name__).error("MongoDB not ready yet")
+                return False
+            return bool(await db.panel_users.find_one({"username": username, "password": hashed}))
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            # Ensure table exists (first boot safety)
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS panel_users "
+                "(id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)"
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id FROM panel_users WHERE username=? AND password=?", (username, hashed)
+            ) as cur:
+                return await cur.fetchone() is not None
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"_check_creds error: {e}")
+        return False
 
 
 @app.get(f"/adminpanel/{PANEL_SECRET}/login", response_class=HTMLResponse)
@@ -50,14 +66,19 @@ async def login_page(error: str = ""):
 
 @app.post(f"/adminpanel/{PANEL_SECRET}/login")
 async def login_post(request: Request):
-    form = await request.form()
-    if await _check_creds(form.get("username",""), form.get("password","")):
-        tok = secrets.token_hex(32)
-        _sessions[tok] = time.time() + 28800
-        r = RedirectResponse(url=f"/adminpanel/{PANEL_SECRET}/a?{PANEL_PARAM}", status_code=302)
-        r.set_cookie("panel_session", tok, httponly=True, max_age=28800)
-        return r
-    return HTMLResponse(_login_html("❌ Invalid username or password"))
+    try:
+        form = await request.form()
+        if await _check_creds(form.get("username",""), form.get("password","")):
+            tok = secrets.token_hex(32)
+            _sessions[tok] = time.time() + 28800
+            r = RedirectResponse(url=f"/adminpanel/{PANEL_SECRET}/a?{PANEL_PARAM}", status_code=302)
+            r.set_cookie("panel_session", tok, httponly=True, max_age=28800)
+            return r
+        return HTMLResponse(_login_html("❌ Invalid username or password"))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"login_post error: {e}")
+        return HTMLResponse(_login_html("❌ Server error, please try again"))
 
 
 @app.get(f"/adminpanel/{PANEL_SECRET}/logout")
