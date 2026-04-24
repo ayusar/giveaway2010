@@ -8,9 +8,20 @@ from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+import asyncio
+from aiogram import Bot, Dispatcher
+from aiogram.filters import Command
+from aiogram.types import Message
+import os
 import uvicorn
 
 app = FastAPI(docs_url=None, redoc_url=None)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
 _sessions: dict = {}
 _start_time = time.time()
 PANEL_SECRET = "royalisbest"
@@ -24,6 +35,16 @@ def _is_auth(token):
     if _sessions[token] < time.time():
         del _sessions[token]; return False
     return True
+
+# ================= BOT HANDLERS =================
+
+@dp.message(Command("start"))
+async def start_cmd(message: Message):
+    await message.answer("Bot is working ✅")
+
+@dp.message()
+async def echo(message: Message):
+    await message.answer(message.text)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -428,6 +449,10 @@ async def root():
 
 def run_web(host="0.0.0.0", port=8080):
     uvicorn.run(app, host=host, port=port, log_level="warning")
+
+@app.on_event("startup")
+async def start_bot():
+    asyncio.create_task(dp.start_polling(bot))
 
 
 # ══════════════════════════════════════════════════════════════
