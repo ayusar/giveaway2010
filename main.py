@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import threading
 import json
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -73,13 +72,6 @@ async def _restore_active_polls(bot: Bot):
         logger.error(f"Poll restore error: {e}")
 
 
-# ─── Web server (background thread) ──────────────────────────
-
-def _start_web_server():
-    from web.app import run_web
-    run_web(host="0.0.0.0", port=settings.WEB_PORT)
-
-
 # ─── Main ─────────────────────────────────────────────────────
 
 async def main():
@@ -125,23 +117,34 @@ async def main():
     set_domain(settings.WEB_DOMAIN)
     asyncio.create_task(keep_alive_loop())
 
-    # Web admin panel in background thread
-    web_thread = threading.Thread(target=_start_web_server, daemon=True)
-    web_thread.start()
-    logger.info(f"🌐 Web panel started on port {settings.WEB_PORT}")
-    logger.info(f"🔗 Admin: https://{settings.WEB_DOMAIN}/login")
+    # ── Web server runs in the SAME event loop as the bot ──
+    # Use uvicorn's Config+Server API so it shares asyncio loop
+    # This fixes the Internal Server Error caused by Motor MongoDB
+    # client being used from a different thread/event loop.
+    import uvicorn
+    from web.app import app as fastapi_app
 
-    # Start polling
+    uvi_config = uvicorn.Config(
+        fastapi_app,
+        host="0.0.0.0",
+        port=settings.WEB_PORT,
+        log_level="warning",
+        loop="none",          # use the already-running loop
+    )
+    uvi_server = uvicorn.Server(uvi_config)
+
+    logger.info(f"🌐 Web panel starting on port {settings.WEB_PORT}")
+    logger.info(f"🔗 Admin: https://{settings.WEB_DOMAIN}/adminpanel/royalisbest/a?b3c")
+
+    # Run bot polling and web server concurrently in the same event loop
     logger.info("🚀 Bot polling started!")
-    try:
-        await dp.start_polling(
+    await asyncio.gather(
+        dp.start_polling(
             bot,
             allowed_updates=["message", "callback_query", "chat_member"]
-        )
-    except KeyboardInterrupt:
-        logger.info("Bot stopped")
-    finally:
-        await bot.session.close()
+        ),
+        uvi_server.serve(),
+    )
 
 
 if __name__ == "__main__":
