@@ -139,6 +139,26 @@ def build_clone_router(clone_token: str, main_bot_username: str) -> Router:
             message.from_user.full_name, referred_by, lang
         )
 
+        # Log new user to LOG_CHANNEL via main bot
+        if is_new:
+            try:
+                from utils.log_utils import log_new_user, get_main_bot
+                main_bot = get_main_bot()
+                if main_bot:
+                    me_info = await bot.get_me()
+                    reported_by = f"@{me_info.username} (clone)"
+                    dc_id = getattr(message.from_user, "dc_id", None)
+                    await log_new_user(
+                        user_id=message.from_user.id,
+                        first_name=message.from_user.first_name or "",
+                        last_name=message.from_user.last_name,
+                        username=message.from_user.username,
+                        dc_id=dc_id,
+                        reported_by=reported_by,
+                    )
+            except Exception:
+                pass  # Never block user flow due to logging failure
+
         # Notify referrer when someone joins via their link
         if is_new and referred_by:
             username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
@@ -603,12 +623,18 @@ class CloneManager:
             me = await bot.get_me()
             main_uname = MAIN_BOT_USERNAME or "MainBot"
 
+            # Clear webhook and pending updates to avoid TelegramConflictError
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+            except Exception:
+                pass
+
             storage = MemoryStorage()
             dp = Dispatcher(storage=storage)
             dp.include_router(build_clone_router(token, main_uname))
 
             task = asyncio.create_task(
-                dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+                dp.start_polling(bot, allowed_updates=["message", "callback_query"], drop_pending_updates=True)
             )
             self.running_clones[token] = (bot, dp, task)
             logger.info(f"✅ Clone bot started: @{me.username}")
