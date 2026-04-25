@@ -92,10 +92,22 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     def _default(obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
-        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+        # Handle MongoDB ObjectId and any other non-serializable types
+        try:
+            from bson import ObjectId
+            if isinstance(obj, ObjectId):
+                return str(obj)
+        except ImportError:
+            pass
+        return str(obj)  # Fallback: convert anything else to string
 
-    json_bytes = json.dumps(archive, default=_default, ensure_ascii=False, indent=2).encode()
-    file_obj   = io.BytesIO(json_bytes)
+    try:
+        json_bytes = json.dumps(archive, default=_default, ensure_ascii=False, indent=2).encode()
+    except Exception as e:
+        logger.error(f"archive_and_purge: JSON serialization failed: {e}")
+        raise
+
+    file_obj = io.BytesIO(json_bytes)
     file_obj.name = f"giveaway_{giveaway_id}.json"
     file_obj.seek(0)  # Ensure pointer is at start before sending
 
