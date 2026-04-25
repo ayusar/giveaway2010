@@ -42,8 +42,14 @@ def lang_keyboard() -> InlineKeyboardMarkup:
 
 
 def join_keyboard(channel_link: str, lang: str) -> InlineKeyboardMarkup:
+    # Ensure URL is valid for Telegram button (must start with https://)
+    url = channel_link.strip()
+    if url.startswith("@"):
+        url = f"https://t.me/{url[1:]}"
+    elif not url.startswith("http"):
+        url = f"https://t.me/{url}"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, "join_btn"), url=channel_link)],
+        [InlineKeyboardButton(text=t(lang, "join_btn"), url=url)],
         [InlineKeyboardButton(text=t(lang, "verify_btn"), callback_data="verify_channel")]
     ])
 
