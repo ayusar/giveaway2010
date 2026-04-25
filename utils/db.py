@@ -8,7 +8,12 @@ sqlite_path = "bot_data.db"
 async def _init_mongo():
     global client, db
     from motor.motor_asyncio import AsyncIOMotorClient
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client = AsyncIOMotorClient(
+        settings.MONGO_URI,
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=20000,
+    )
     db = client.get_default_database()
     await db.giveaways.create_index("giveaway_id", unique=True)
     await db.giveaways.create_index("channel_id")
