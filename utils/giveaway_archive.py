@@ -29,7 +29,10 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     store enriched metadata, then delete from the live database.
     Returns True on success.
     """
+    print(f"[ARCHIVE] Starting archive for giveaway {giveaway_id}", flush=True)
+
     db_channel = getattr(settings, "DATABASE_CHANNEL", None)
+    print(f"[ARCHIVE] DATABASE_CHANNEL = {db_channel!r}", flush=True)
     if not db_channel:
         logger.warning("archive_and_purge: DATABASE_CHANNEL not set — skipping archive")
         return False
@@ -37,29 +40,33 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     # Convert channel ID to int if it's a numeric string (e.g. "-1003701269089")
     try:
         db_channel = int(db_channel)
+        print(f"[ARCHIVE] db_channel converted to int: {db_channel}", flush=True)
     except (ValueError, TypeError):
         pass  # Keep as string (e.g. "@mychannel")
 
     # Always use the main bot to send to DATABASE_CHANNEL
-    # (the bot passed in may be a clone bot that isn't admin in the channel)
     from utils.log_utils import get_main_bot
     send_bot = get_main_bot() or bot
+    print(f"[ARCHIVE] send_bot = {send_bot}", flush=True)
 
     from utils.db import get_db, is_mongo, get_sqlite_path
 
     # ── 1. Fetch full data ────────────────────────────────────
+    print(f"[ARCHIVE] Fetching giveaway data, is_mongo={is_mongo()}", flush=True)
     giveaway = None
     all_votes = []
 
     if is_mongo():
         db = get_db()
         giveaway = await db.giveaways.find_one({"giveaway_id": giveaway_id})
+        print(f"[ARCHIVE] giveaway found: {giveaway is not None}", flush=True)
         if giveaway:
             giveaway.pop("_id", None)
             raw_votes = await db.votes.find({"giveaway_id": giveaway_id}).to_list(None)
             for v in raw_votes:
                 v.pop("_id", None)
                 all_votes.append(v)
+            print(f"[ARCHIVE] votes fetched: {len(all_votes)}", flush=True)
     else:
         import aiosqlite
         async with aiosqlite.connect(get_sqlite_path()) as conn:
@@ -79,6 +86,7 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
                     all_votes = [dict(r) for r in await cur.fetchall()]
 
     if not giveaway:
+        print(f"[ARCHIVE] ERROR: giveaway {giveaway_id} not found in DB!", flush=True)
         logger.warning(f"archive_and_purge: giveaway {giveaway_id} not found")
         return False
 
@@ -103,7 +111,9 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
 
     try:
         json_bytes = json.dumps(archive, default=_default, ensure_ascii=False, indent=2).encode()
+        print(f"[ARCHIVE] JSON serialized OK, size={len(json_bytes)} bytes", flush=True)
     except Exception as e:
+        print(f"[ARCHIVE] JSON serialization FAILED: {e}", flush=True)
         logger.error(f"archive_and_purge: JSON serialization failed: {e}")
         raise
 
@@ -132,6 +142,7 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     )
 
     # ── 3. Send to DATABASE_CHANNEL ───────────────────────────
+    print(f"[ARCHIVE] Sending document to db_channel={db_channel}", flush=True)
     try:
         sent_msg = await send_bot.send_document(
             db_channel,
@@ -140,8 +151,10 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
             parse_mode="HTML",
         )
         file_id = sent_msg.document.file_id
+        print(f"[ARCHIVE] Document sent OK, file_id={file_id}", flush=True)
         logger.info(f"✅ Giveaway {giveaway_id} archived to DATABASE_CHANNEL")
     except Exception as e:
+        print(f"[ARCHIVE] send_document FAILED: {type(e).__name__}: {e}", flush=True)
         logger.error(f"archive_and_purge: failed to send to DATABASE_CHANNEL {db_channel!r}: {e}")
         raise  # Re-raise so _archive_giveaway can show the real error to creator
 
