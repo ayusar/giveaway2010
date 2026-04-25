@@ -1,3 +1,4 @@
+# utils/clone_manager.py
 import asyncio
 import csv
 import io
@@ -52,12 +53,20 @@ async def _check_channel_membership(bot: Bot, channel_link: str, user_id: int) -
     if not channel_link:
         return True
     try:
-        # Extract username from link
-        username = channel_link.replace("https://t.me/", "").replace("@", "")
-        member = await bot.get_chat_member(f"@{username}", user_id)
+        raw = channel_link.strip()
+        # Private invite link (t.me/+xxx) — cannot check membership, let through
+        if "t.me/+" in raw or "telegram.me/+" in raw:
+            return True
+        # Numeric ID e.g. -1001234567890
+        if raw.lstrip("-").isdigit():
+            member = await bot.get_chat_member(int(raw), user_id)
+        else:
+            # Public @username or https://t.me/username
+            username = raw.replace("https://t.me/", "").replace("http://t.me/", "").replace("@", "").strip("/")
+            member = await bot.get_chat_member(f"@{username}", user_id)
         return member.status not in ("left", "kicked")
     except Exception:
-        return True  # If we can't check, let them through
+        return False  # Can't check → treat as not member, show force join
 
 
 def build_clone_router(clone_token: str, main_bot_username: str) -> Router:
@@ -99,15 +108,7 @@ def build_clone_router(clone_token: str, main_bot_username: str) -> Router:
         welcome = clone.get("welcome_message") or DEFAULT_WELCOME_EN
         footer = _powered_by(lang, main_bot_username)
 
-        # Returning user after restart — restore their state, skip re-registration flow
-        if existing and not referred_by:
-            await message.answer(
-                welcome + footer,
-                parse_mode="HTML"
-            )
-            return
-
-        # Channel join gate
+        # Channel join gate — check FIRST before anything else
         channel_link = clone.get("channel_link", "")
         if channel_link:
             is_member = await _check_channel_membership(bot, channel_link, message.from_user.id)
@@ -117,9 +118,15 @@ def build_clone_router(clone_token: str, main_bot_username: str) -> Router:
                     reply_markup=join_keyboard(channel_link, lang),
                     parse_mode="HTML"
                 )
-                await add_referral_user(clone_token, message.from_user.id,
-                                        message.from_user.full_name, referred_by, lang)
-                return
+                return  # Do NOT register until they actually join
+
+        # Returning user after restart — restore their state, skip re-registration flow
+        if existing and not referred_by:
+            await message.answer(
+                welcome + footer,
+                parse_mode="HTML"
+            )
+            return
 
         is_new = await add_referral_user(
             clone_token, message.from_user.id,
@@ -191,10 +198,22 @@ def build_clone_router(clone_token: str, main_bot_username: str) -> Router:
             await callback.answer(t(lang, "not_verified"), show_alert=True)
             return
 
+        # ✅ Register user in DB now that they have joined
+        await add_referral_user(
+            clone_token, callback.from_user.id,
+            callback.from_user.full_name, None, lang
+        )
+
         await callback.answer(t(lang, "verified"), show_alert=True)
         welcome = clone.get("welcome_message") or DEFAULT_WELCOME_EN
         footer = _powered_by(lang, main_bot_username)
-        await callback.message.edit_text(welcome + footer, parse_mode="HTML")
+
+        # Ask language preference for new users
+        existing = await get_referral_user(clone_token, callback.from_user.id)
+        if existing and existing.get("lang") == "en":
+            await callback.message.edit_text(t(lang, "choose_language"), reply_markup=lang_keyboard())
+        else:
+            await callback.message.edit_text(welcome + footer, parse_mode="HTML")
 
     # ── /refer ────────────────────────────────────────────────
 
