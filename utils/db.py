@@ -17,6 +17,7 @@ async def _init_mongo():
     await db.clone_bots.create_index("owner_id")
     await db.referrals.create_index([("clone_token", 1), ("user_id", 1)], unique=True)
     await db.referrals.create_index("referred_by")
+    await db.main_bot_users.create_index("user_id", unique=True)
     print("✅ MongoDB connected")
 
 
@@ -70,6 +71,14 @@ async def _init_sqlite():
                 lang TEXT DEFAULT 'en',
                 joined_at TEXT,
                 UNIQUE(clone_token, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS main_bot_users (
+                user_id INTEGER PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                username TEXT,
+                is_banned INTEGER DEFAULT 0,
+                joined_at TEXT
             );
             CREATE TABLE IF NOT EXISTS banned_users (
                 user_id INTEGER PRIMARY KEY,
