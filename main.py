@@ -4,7 +4,6 @@ import json
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from config.settings import settings
-from handlers import start, giveaway, referral, admin, clone_bot
 from utils.db import init_db
 from utils.clone_manager import get_clone_manager
 import utils.clone_manager as clone_manager_module
@@ -72,13 +71,21 @@ async def _restore_active_polls(bot: Bot):
         logger.error(f"Poll restore error: {e}")
 
 
-# ─── Bot startup (runs after DB is ready) ─────────────────────
+# ─── Bot startup ──────────────────────────────────────────────
 
 async def _start_bot():
     try:
-        storage = MemoryStorage()
         bot = Bot(token=settings.BOT_TOKEN)
-        dp  = Dispatcher(storage=storage)
+
+        # Clear stale polling lock BEFORE creating Dispatcher or including routers
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("🔄 Webhook cleared, pending updates dropped")
+        except Exception as e:
+            logger.warning(f"delete_webhook warning: {e}")
+
+        storage = MemoryStorage()
+        dp = Dispatcher(storage=storage)
 
         me = await bot.get_me()
         clone_manager_module.MAIN_BOT_USERNAME = me.username
@@ -87,33 +94,34 @@ async def _start_bot():
         from web.broadcaster import set_main_bot
         set_main_bot(bot)
 
-        # Register main bot for log_utils — all LOG_CHANNEL messages go through it
         from utils.log_utils import set_main_bot as set_log_bot
         set_log_bot(bot)
 
-        # Drop webhook + pending updates FIRST to fix TelegramConflictError on Render restarts.
-        # Previous instance may not have shut down cleanly, leaving a stale getUpdates lock.
-        # Must happen BEFORE include_router() — a conflicted bot will cause "Router already attached".
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("🔄 Webhook cleared, pending updates dropped")
-        except Exception as e:
-            logger.warning(f"delete_webhook warning (non-fatal): {e}")
-
-        # ── Ban middleware — must be registered before routers ──
+        # ── Ban middleware ──────────────────────────────────────
         from utils.ban_middleware import BanMiddleware
         dp.message.middleware(BanMiddleware())
         dp.callback_query.middleware(BanMiddleware())
 
-        dp.include_router(start.router)
-        dp.include_router(giveaway.router)
-        dp.include_router(referral.router)
-        dp.include_router(admin.router)
-        dp.include_router(clone_bot.router)
+        # ── Import routers fresh — never use module-level cached imports
+        #    so restarted process always gets clean Router objects ─────────
+        import importlib
+        import sys
 
-        # ── New feature routers ────────────────────────────────
-        from handlers import stats as stats_handler
-        dp.include_router(stats_handler.router)
+        for mod_name in [
+            "handlers.start", "handlers.giveaway", "handlers.referral",
+            "handlers.admin", "handlers.clone_bot", "handlers.stats",
+        ]:
+            if mod_name in sys.modules:
+                importlib.reload(sys.modules[mod_name])
+            else:
+                importlib.import_module(mod_name)
+
+        dp.include_router(sys.modules["handlers.start"].router)
+        dp.include_router(sys.modules["handlers.giveaway"].router)
+        dp.include_router(sys.modules["handlers.referral"].router)
+        dp.include_router(sys.modules["handlers.admin"].router)
+        dp.include_router(sys.modules["handlers.clone_bot"].router)
+        dp.include_router(sys.modules["handlers.stats"].router)
 
         clone_manager = get_clone_manager()
         asyncio.create_task(clone_manager.start_all_clones())
@@ -137,10 +145,9 @@ async def _start_bot():
         logger.error(f"❌ Bot failed: {e}", exc_info=True)
 
 
-# ─── DB init then launch bot (background task) ────────────────
+# ─── DB init then launch bot ──────────────────────────────────
 
 async def _init_then_start_bot():
-    """Runs in background so uvicorn can bind port first."""
     try:
         logger.info("🔄 Initialising database...")
         await init_db()
@@ -161,16 +168,14 @@ async def main():
         host="0.0.0.0",
         port=settings.WEB_PORT,
         log_level="warning",
-        loop="none",   # share the already-running asyncio loop
+        loop="none",
     )
     uvi_server = uvicorn.Server(uvi_config)
 
-    # Start DB init + bot in background — uvicorn binds port immediately
-    # so Render detects it without waiting for MongoDB retries
     asyncio.create_task(_init_then_start_bot())
 
     logger.info(f"🌐 Web server binding on port {settings.WEB_PORT}...")
-    await uvi_server.serve()   # blocks here; bot runs as background task
+    await uvi_server.serve()
 
 
 if __name__ == "__main__":
