@@ -25,7 +25,50 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
+    user = message.from_user
+    # Log new user to LOG_CHANNEL
+    try:
+        from utils.log_utils import log_new_user, get_main_bot
+        bot = get_main_bot()
+        if bot:
+            me = await bot.get_me()
+            reported_by = f"@{me.username}"
+        else:
+            reported_by = "MainBot"
+        dc_id = getattr(user, "dc_id", None)
+        await log_new_user(
+            user_id=user.id,
+            first_name=user.first_name or "",
+            last_name=user.last_name,
+            username=user.username,
+            dc_id=dc_id,
+            reported_by=reported_by,
+        )
+    except Exception:
+        pass
+
     await message.answer(MAIN_BOT_WELCOME, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(
+        "📖 <b>Help Guide</b>\n\n"
+        "<b>Giveaway Poll:</b>\n"
+        "1. Add this bot as admin in your channel\n"
+        "2. Use /creategiveaway and follow the setup steps\n"
+        "3. The poll posts in your channel with live vote bars\n"
+        "4. Users must join your channel to vote\n\n"
+        "<b>Clone Refer Bot:</b>\n"
+        "1. Create a new bot via @BotFather\n"
+        "2. Use /clonebot and paste your bot token\n"
+        "3. Your bot is now live and tracks referrals!\n\n"
+        "<b>Commands:</b>\n"
+        "/creategiveaway — Start a new giveaway\n"
+        "/mygiveaways — View your active giveaways\n"
+        "/clonebot — Set up your referral clone bot\n",
+        parse_mode="HTML"
+    )
 
 
 @router.message(Command("help"))
