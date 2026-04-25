@@ -13,6 +13,7 @@ import json
 import logging
 import io
 import asyncio
+from aiogram.types import BufferedInputFile
 from datetime import datetime, timezone
 from aiogram import Bot
 from config.settings import settings
@@ -126,9 +127,7 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
         print(f"[ARCHIVE] JSON serialization FAILED: {e}", flush=True)
         raise
 
-    file_obj = io.BytesIO(json_bytes)
-    file_obj.name = f"giveaway_{giveaway_id}.json"
-    file_obj.seek(0)
+    file_obj = BufferedInputFile(json_bytes, filename=f"giveaway_{giveaway_id}.json")
 
     title       = giveaway.get("title", giveaway_id)
     total_v     = giveaway.get("total_votes", 0)
