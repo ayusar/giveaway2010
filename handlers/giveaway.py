@@ -523,11 +523,15 @@ async def _dm_winner_if_allowed(bot: Bot, giveaway: dict, votes: dict):
 async def _archive_giveaway(bot: Bot, giveaway_id: str, creator_id: int = None):
     """Archive closed giveaway to DATABASE_CHANNEL and purge from live DB."""
     from config.settings import settings
+    from utils.log_utils import get_main_bot
+
+    # Always use the main bot — clone bots are not admins in DATABASE_CHANNEL
+    notify_bot = get_main_bot() or bot
 
     async def _notify_creator(msg: str):
         if creator_id:
             try:
-                await bot.send_message(creator_id, msg, parse_mode="HTML")
+                await notify_bot.send_message(creator_id, msg, parse_mode="HTML")
             except Exception:
                 pass
 
@@ -542,7 +546,8 @@ async def _archive_giveaway(bot: Bot, giveaway_id: str, creator_id: int = None):
         return
     try:
         from utils.giveaway_archive import archive_and_purge
-        ok = await archive_and_purge(bot, giveaway_id)
+        # Pass the main bot so archive_and_purge always has the right bot
+        ok = await archive_and_purge(notify_bot, giveaway_id)
         if ok:
             logger.info(f"Giveaway {giveaway_id} archived successfully")
             await _notify_creator(
@@ -876,3 +881,75 @@ async def _scheduled_post(giveaway_id: str, delay: float, bot: Bot):
             await bot.send_message(giveaway["creator_id"], f"❌ Scheduled post failed: {e}")
         except Exception:
             pass
+
+
+# ─── Test Archive (superadmin only) ──────────────────────────
+
+@router.message(Command("testarchive"))
+async def cmd_test_archive(message: Message, bot: Bot):
+    """
+    Usage: /testarchive GIVEAWAY_ID
+    Superadmin-only — test archive pipeline without closing the poll.
+    Reports exactly what happens at each step.
+    """
+    from config.settings import settings
+    from utils.log_utils import get_main_bot
+
+    user_id = message.from_user.id
+    if user_id not in (settings.SUPERADMIN_IDS or []):
+        await message.answer("❌ Superadmin only.")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Usage: /testarchive <code>GIVEAWAY_ID</code>", parse_mode="HTML")
+        return
+
+    giveaway_id = parts[1].upper()
+    giveaway = await get_giveaway(giveaway_id)
+    if not giveaway:
+        await message.answer(f"❌ Giveaway <code>{giveaway_id}</code> not found in DB.", parse_mode="HTML")
+        return
+
+    db_channel = getattr(settings, "DATABASE_CHANNEL", None)
+    main_bot   = get_main_bot()
+
+    await message.answer(
+        f"🔍 <b>Archive Test</b>
+"
+        f"━━━━━━━━━━━━━━━━━━━━━
+"
+        f"🆔 Giveaway: <code>{giveaway_id}</code>
+"
+        f"📦 DATABASE_CHANNEL: <code>{db_channel or 'NOT SET'}</code>
+"
+        f"🤖 Main bot ready: <code>{'YES' if main_bot else 'NO — fallback to passed bot'}</code>
+
+"
+        f"⏳ Attempting archive now...",
+        parse_mode="HTML"
+    )
+
+    try:
+        from utils.giveaway_archive import archive_and_purge
+        send_bot = main_bot or bot
+        ok = await archive_and_purge(send_bot, giveaway_id)
+        if ok:
+            await message.answer(
+                f"✅ <b>Archive SUCCESS!</b>
+"
+                f"<code>{giveaway_id}</code> sent to DATABASE_CHANNEL and purged from DB.",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer(
+                "❌ <b>Archive returned False.</b>
+Check Render logs for [ARCHIVE] lines.",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await message.answer(
+            f"❌ <b>Archive EXCEPTION:</b>
+<code>{type(e).__name__}: {e}</code>",
+            parse_mode="HTML"
+        )
