@@ -43,11 +43,23 @@ async def _start_bot():
 
         set_main_bot(bot)
 
+        # Register main bot for log_utils
+        from utils.log_utils import set_main_bot as set_log_bot
+        set_log_bot(bot)
+
+        # ── Ban middleware ────────────────────────────────────
+        from utils.ban_middleware import BanMiddleware
+        dp.message.middleware(BanMiddleware())
+        dp.callback_query.middleware(BanMiddleware())
+
         dp.include_router(start.router)
         dp.include_router(giveaway.router)
         dp.include_router(referral.router)
         dp.include_router(admin.router)
         dp.include_router(clone_bot.router)
+
+        from handlers import stats as stats_handler
+        dp.include_router(stats_handler.router)
 
         clone_manager = get_clone_manager()
         asyncio.create_task(clone_manager.start_all_clones())
@@ -179,16 +191,191 @@ async def api_clones(request: Request):
     return JSONResponse(await _build_clones())
 
 
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/clone_users/{{token}}")
+async def api_clone_users(token: str, request: Request):
+    """
+    Live fetch of all users who started a specific clone bot,
+    queried directly from the referrals table by clone_token.
+    Returns: user_id, user_name, refer_count, joined_at — sorted by refer_count desc.
+    """
+    if not _is_auth(_get_token(request)):
+        raise HTTPException(401)
+
+    from utils.db import get_db, is_mongo, get_sqlite_path
+
+    users = []
+    try:
+        if is_mongo():
+            db = get_db()
+            docs = await db.referrals.find(
+                {"clone_token": token}
+            ).sort("refer_count", -1).to_list(None)
+            users = [
+                {
+                    "user_id":     d.get("user_id"),
+                    "user_name":   d.get("user_name") or "—",
+                    "refer_count": d.get("refer_count", 0),
+                    "joined_at":   str(d.get("joined_at", ""))[:10],
+                }
+                for d in docs
+            ]
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                async with conn.execute(
+                    "SELECT user_id, user_name, refer_count, joined_at "
+                    "FROM referrals WHERE clone_token=? ORDER BY refer_count DESC",
+                    (token,)
+                ) as cur:
+                    rows = await cur.fetchall()
+            users = [
+                {
+                    "user_id":     r["user_id"],
+                    "user_name":   r["user_name"] or "—",
+                    "refer_count": r["refer_count"] or 0,
+                    "joined_at":   str(r["joined_at"] or "")[:10],
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        logger.error(f"clone_users error: {e}")
+        raise HTTPException(500, detail=str(e))
+
+    return JSONResponse({
+        "token":  token,
+        "users":  users,
+        "total":  len(users),
+    })
+
+
 @app.get(f"/adminpanel/{PANEL_SECRET}/api/giveaways")
 async def api_giveaways(request: Request):
     if not _is_auth(_get_token(request)): raise HTTPException(401)
     return JSONResponse(await _build_giveaways())
 
 
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/old_giveaways")
+async def api_old_giveaways(request: Request):
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from utils.giveaway_archive import get_old_giveaways
+    data = await get_old_giveaways(limit=200)
+    return JSONResponse(data)
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/old_giveaway_file/{{giveaway_id}}")
+async def api_old_giveaway_file(giveaway_id: str, request: Request):
+    """Return the Telegram file_id for a specific archived giveaway so the frontend can trigger a bot send."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    try:
+        if is_mongo():
+            doc = await get_db().giveaway_archive_refs.find_one({"giveaway_id": giveaway_id.upper()})
+            if doc:
+                doc.pop("_id", None)
+                return JSONResponse(doc)
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                async with conn.execute(
+                    "SELECT * FROM giveaway_archive_refs WHERE giveaway_id=?",
+                    (giveaway_id.upper(),)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row:
+                    return JSONResponse(dict(row))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    raise HTTPException(404, detail="Not found")
+
+
+@app.delete(f"/adminpanel/{PANEL_SECRET}/api/old_giveaways")
+async def api_deleteold(request: Request):
+    """Delete archived giveaway metadata older than N months."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    body = await request.json()
+    months = int(body.get("months", 0))
+    if months < 1:
+        return JSONResponse({"ok": False, "error": "months must be >= 1"}, status_code=400)
+    from utils.giveaway_archive import delete_old_giveaways_before
+    deleted = await delete_old_giveaways_before(months)
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
 @app.get(f"/adminpanel/{PANEL_SECRET}/api/panels")
 async def api_panels(request: Request):
     if not _is_auth(_get_token(request)): raise HTTPException(401)
     return JSONResponse(await _build_panels())
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/giveaway_participants/{{giveaway_id}}")
+async def api_giveaway_participants(giveaway_id: str, request: Request):
+    """
+    Live fetch: returns every user who voted in this giveaway, plus their
+    referral count from whichever clone bot they used (matched by user_id).
+    No user_ids are cached — this queries the votes + referrals tables fresh.
+    """
+    if not _is_auth(_get_token(request)):
+        raise HTTPException(401)
+
+    from utils.db import get_db, is_mongo, get_sqlite_path
+
+    participants = []
+
+    try:
+        if is_mongo():
+            db = get_db()
+            votes = await db.votes.find({"giveaway_id": giveaway_id}).to_list(None)
+            for v in votes:
+                uid = v.get("user_id")
+                uname = v.get("user_name") or "Unknown"
+                ref_doc = await db.referrals.find_one({"user_id": uid})
+                refer_count = ref_doc.get("refer_count", 0) if ref_doc else 0
+                participants.append({
+                    "user_id":     uid,
+                    "user_name":   uname,
+                    "option":      v.get("option_index", 0),
+                    "voted_at":    str(v.get("voted_at", ""))[:16],
+                    "refer_count": refer_count,
+                })
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                async with conn.execute(
+                    "SELECT user_id, user_name, option_index, voted_at FROM votes "
+                    "WHERE giveaway_id=? ORDER BY voted_at DESC",
+                    (giveaway_id,)
+                ) as cur:
+                    vote_rows = await cur.fetchall()
+
+                for vr in vote_rows:
+                    uid = vr["user_id"]
+                    async with conn.execute(
+                        "SELECT refer_count FROM referrals WHERE user_id=? "
+                        "ORDER BY refer_count DESC LIMIT 1",
+                        (uid,)
+                    ) as rc:
+                        ref_row = await rc.fetchone()
+                    refer_count = ref_row[0] if ref_row else 0
+                    participants.append({
+                        "user_id":     uid,
+                        "user_name":   vr["user_name"] or "Unknown",
+                        "option":      vr["option_index"],
+                        "voted_at":    str(vr["voted_at"] or "")[:16],
+                        "refer_count": refer_count,
+                    })
+    except Exception as e:
+        logger.error(f"giveaway_participants error: {e}")
+        raise HTTPException(500, detail=str(e))
+
+    participants.sort(key=lambda x: x["refer_count"], reverse=True)
+    return JSONResponse({
+        "giveaway_id": giveaway_id,
+        "participants": participants,
+        "total": len(participants),
+    })
 
 
 @app.post(f"/adminpanel/{PANEL_SECRET}/api/ban_clone")
@@ -424,6 +611,64 @@ async def _build_panels():
             return []
 
 
+
+async def _build_users(page: int = 1, search: str = "") -> dict:
+    """Paginated user list from main_bot_users."""
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    per_page = 50
+    offset   = (page - 1) * per_page
+
+    if is_mongo():
+        db    = get_db()
+        query = {}
+        if search:
+            query = {"$or": [
+                {"first_name": {"$regex": search, "$options": "i"}},
+                {"username":   {"$regex": search, "$options": "i"}},
+                {"user_id":    int(search) if search.isdigit() else -1},
+            ]}
+        total = await db.main_bot_users.count_documents(query)
+        users = await db.main_bot_users.find(query).sort("joined_at", -1).skip(offset).limit(per_page).to_list(None)
+    else:
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            if search:
+                like = f"%{search}%"
+                q_count = "SELECT COUNT(*) FROM main_bot_users WHERE first_name LIKE ? OR username LIKE ? OR CAST(user_id AS TEXT) LIKE ?"
+                q_rows  = "SELECT * FROM main_bot_users WHERE first_name LIKE ? OR username LIKE ? OR CAST(user_id AS TEXT) LIKE ? ORDER BY joined_at DESC LIMIT ? OFFSET ?"
+                async with conn.execute(q_count, (like, like, like)) as c:
+                    total = (await c.fetchone())[0]
+                async with conn.execute(q_rows, (like, like, like, per_page, offset)) as c:
+                    rows = await c.fetchall()
+            else:
+                async with conn.execute("SELECT COUNT(*) FROM main_bot_users") as c:
+                    total = (await c.fetchone())[0]
+                async with conn.execute(
+                    "SELECT * FROM main_bot_users ORDER BY joined_at DESC LIMIT ? OFFSET ?",
+                    (per_page, offset)
+                ) as c:
+                    rows = await c.fetchall()
+            users = [dict(r) for r in rows]
+
+    return {
+        "users":    [
+            {
+                "user_id":    u["user_id"],
+                "first_name": u.get("first_name") or "",
+                "last_name":  u.get("last_name")  or "",
+                "username":   u.get("username")   or "",
+                "is_banned":  bool(u.get("is_banned", False)),
+                "joined_at":  str(u.get("joined_at", ""))[:10],
+            }
+            for u in users
+        ],
+        "total":    total,
+        "page":     page,
+        "per_page": per_page,
+        "pages":    max(1, (total + per_page - 1) // per_page),
+    }
+
 async def _build_panel_data(panel: dict) -> dict:
     """Build full data for the user panel page."""
     from utils.db import get_db, is_mongo, get_sqlite_path
@@ -501,6 +746,177 @@ async def _build_panel_data(panel: dict) -> dict:
         "created_at": panel.get("created_at","")[:10],
     }
 
+
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/users")
+async def api_users(request: Request, page: int = 1, search: str = ""):
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    return JSONResponse(await _build_users(page=page, search=search))
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/users/export")
+async def api_users_export(request: Request):
+    """Export all main_bot_users as a CSV download."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from fastapi.responses import StreamingResponse
+    import csv, io
+    from utils.db import get_db, is_mongo, get_sqlite_path
+
+    rows = []
+    if is_mongo():
+        db = get_db()
+        async for u in db.main_bot_users.find({}).sort("joined_at", -1):
+            rows.append({
+                "user_id":    u.get("user_id", ""),
+                "first_name": u.get("first_name", ""),
+                "last_name":  u.get("last_name", ""),
+                "username":   u.get("username", ""),
+                "is_banned":  1 if u.get("is_banned") else 0,
+                "joined_at":  str(u.get("joined_at", ""))[:19],
+            })
+    else:
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT user_id,first_name,last_name,username,is_banned,joined_at "
+                "FROM main_bot_users ORDER BY joined_at DESC"
+            ) as cur:
+                for r in await cur.fetchall():
+                    rows.append(dict(r))
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=["user_id","first_name","last_name","username","is_banned","joined_at"])
+    writer.writeheader()
+    writer.writerows(rows)
+    buf.seek(0)
+
+    from datetime import datetime
+    fname = f"users_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/live_users")
+async def api_live_users(request: Request):
+    """Live total user count — polled every few seconds by the dashboard widget."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    try:
+        if is_mongo():
+            count = await get_db().main_bot_users.count_documents({})
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                async with conn.execute("SELECT COUNT(*) FROM main_bot_users") as cur:
+                    count = (await cur.fetchone())[0]
+        return JSONResponse({"count": count})
+    except Exception as e:
+        return JSONResponse({"count": 0, "error": str(e)})
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/bot_stats")
+async def api_bot_stats(request: Request):
+    """Combined stats panel — mirrors /stats bot command."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    try:
+        if is_mongo():
+            db = get_db()
+            total_users      = await db.main_bot_users.count_documents({})
+            total_giveaways  = await db.giveaways.count_documents({})
+            live_giveaways   = await db.giveaways.count_documents({"is_active": True})
+            closed_giveaways = await db.giveaways.count_documents({"is_active": False})
+            total_votes = 0
+            async for g in db.giveaways.find({}, {"total_votes": 1}):
+                total_votes += g.get("total_votes", 0)
+            total_clones  = await db.clone_bots.count_documents({"is_active": True})
+            banned_users  = await db.main_bot_users.count_documents({"is_banned": True})
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                async def cnt(q, p=()):
+                    async with conn.execute(q, p) as c:
+                        return (await c.fetchone())[0]
+                total_users      = await cnt("SELECT COUNT(*) FROM main_bot_users")
+                total_giveaways  = await cnt("SELECT COUNT(*) FROM giveaways")
+                live_giveaways   = await cnt("SELECT COUNT(*) FROM giveaways WHERE is_active=1")
+                closed_giveaways = await cnt("SELECT COUNT(*) FROM giveaways WHERE is_active=0")
+                total_votes      = await cnt("SELECT COALESCE(SUM(total_votes),0) FROM giveaways")
+                total_clones     = await cnt("SELECT COUNT(*) FROM clone_bots WHERE is_active=1")
+                banned_users     = await cnt("SELECT COUNT(*) FROM main_bot_users WHERE is_banned=1")
+
+        return JSONResponse({
+            "total_users":      total_users,
+            "total_giveaways":  total_giveaways,
+            "live_giveaways":   live_giveaways,
+            "closed_giveaways": closed_giveaways,
+            "total_votes":      total_votes,
+            "total_clones":     total_clones,
+            "banned_users":     banned_users,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post(f"/adminpanel/{PANEL_SECRET}/api/ban_user")
+async def api_ban_user(request: Request):
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    data = await request.json()
+    user_id = int(data.get("user_id", 0))
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Missing user_id"})
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    if is_mongo():
+        await get_db().main_bot_users.update_one(
+            {"user_id": user_id}, {"$set": {"is_banned": True}}, upsert=True
+        )
+        await get_db().banned_users.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "banned": True}},
+            upsert=True,
+        )
+    else:
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            await conn.execute(
+                "UPDATE main_bot_users SET is_banned=1 WHERE user_id=?", (user_id,)
+            )
+            await conn.execute(
+                "INSERT OR REPLACE INTO banned_users (user_id, banned) VALUES (?,1)", (user_id,)
+            )
+            await conn.commit()
+    return JSONResponse({"ok": True})
+
+
+@app.post(f"/adminpanel/{PANEL_SECRET}/api/unban_user")
+async def api_unban_user(request: Request):
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    data = await request.json()
+    user_id = int(data.get("user_id", 0))
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Missing user_id"})
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    if is_mongo():
+        await get_db().main_bot_users.update_one(
+            {"user_id": user_id}, {"$set": {"is_banned": False}}
+        )
+        await get_db().banned_users.delete_one({"user_id": user_id})
+    else:
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            await conn.execute(
+                "UPDATE main_bot_users SET is_banned=0 WHERE user_id=?", (user_id,)
+            )
+            await conn.execute(
+                "DELETE FROM banned_users WHERE user_id=?", (user_id,)
+            )
+            await conn.commit()
+    return JSONResponse({"ok": True})
 
 @app.get("/health")
 async def health():
