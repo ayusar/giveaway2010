@@ -5,30 +5,25 @@ When a giveaway is closed:
   1. Serialize full data (giveaway + all votes) to JSON
   2. Send the JSON file to the DATABASE_CHANNEL in Telegram
   3. Delete the giveaway + its votes from MongoDB / SQLite
-  4. Store enriched metadata (title, creator_id, created_at, end_date) in
-     giveaway_archive_refs so the admin panel and /oldgiveaway command work.
-
-Admin can later request old giveaway data — bot sends the stored file back.
-Users with a panel link can also view their closed giveaway via /oldgiveaway ID.
+  4. Store enriched metadata in giveaway_archive_refs
 """
 from __future__ import annotations
 
 import json
 import logging
 import io
+import asyncio
 from datetime import datetime, timezone
 from aiogram import Bot
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Timeout in seconds for each DB/Telegram operation
+_TIMEOUT = 20
+
 
 async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
-    """
-    Fetch full giveaway data, send to DATABASE_CHANNEL as a JSON file,
-    store enriched metadata, then delete from the live database.
-    Returns True on success.
-    """
     print(f"[ARCHIVE] Starting archive for giveaway {giveaway_id}", flush=True)
 
     db_channel = getattr(settings, "DATABASE_CHANNEL", None)
@@ -37,60 +32,68 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
         logger.warning("archive_and_purge: DATABASE_CHANNEL not set — skipping archive")
         return False
 
-    # Convert channel ID to int if it's a numeric string (e.g. "-1003701269089")
     try:
         db_channel = int(db_channel)
         print(f"[ARCHIVE] db_channel converted to int: {db_channel}", flush=True)
     except (ValueError, TypeError):
-        pass  # Keep as string (e.g. "@mychannel")
+        pass
 
-    # Always use the MAIN bot to send to DATABASE_CHANNEL.
-    # Clone bots are NOT admins in DATABASE_CHANNEL — using them causes a silent 403 Forbidden.
     from utils.log_utils import get_main_bot
     send_bot = get_main_bot()
     if send_bot is None:
-        # Fallback: use whatever bot was passed in (e.g. during early startup before log_utils is wired)
         send_bot = bot
-        print(f"[ARCHIVE] WARNING: get_main_bot() is None — using fallback bot. "
-              f"Ensure DATABASE_CHANNEL has this bot as admin!", flush=True)
+        print(f"[ARCHIVE] WARNING: get_main_bot() is None — using fallback bot.", flush=True)
     else:
         print(f"[ARCHIVE] Using main bot (token prefix: {send_bot.token[:10]}...)", flush=True)
 
     from utils.db import get_db, is_mongo, get_sqlite_path
 
-    # ── 1. Fetch full data ────────────────────────────────────
+    # ── 1. Fetch full data (with timeout) ────────────────────
     print(f"[ARCHIVE] Fetching giveaway data, is_mongo={is_mongo()}", flush=True)
     giveaway = None
     all_votes = []
 
-    if is_mongo():
-        db = get_db()
-        giveaway = await db.giveaways.find_one({"giveaway_id": giveaway_id})
-        print(f"[ARCHIVE] giveaway found: {giveaway is not None}", flush=True)
-        if giveaway:
-            giveaway.pop("_id", None)
-            raw_votes = await db.votes.find({"giveaway_id": giveaway_id}).to_list(None)
-            for v in raw_votes:
-                v.pop("_id", None)
-                all_votes.append(v)
-            print(f"[ARCHIVE] votes fetched: {len(all_votes)}", flush=True)
-    else:
-        import aiosqlite
-        async with aiosqlite.connect(get_sqlite_path()) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM giveaways WHERE giveaway_id=?", (giveaway_id,)
-            ) as cur:
-                row = await cur.fetchone()
-            if row:
-                giveaway = dict(row)
-                giveaway["prizes"]  = json.loads(giveaway["prizes"])
-                giveaway["options"] = json.loads(giveaway["options"])
-                giveaway["votes"]   = json.loads(giveaway["votes"])
+    try:
+        if is_mongo():
+            db = get_db()
+            print(f"[ARCHIVE] Running find_one...", flush=True)
+            giveaway = await asyncio.wait_for(
+                db.giveaways.find_one({"giveaway_id": giveaway_id}),
+                timeout=_TIMEOUT
+            )
+            print(f"[ARCHIVE] giveaway found: {giveaway is not None}", flush=True)
+            if giveaway:
+                giveaway.pop("_id", None)
+                print(f"[ARCHIVE] Fetching votes...", flush=True)
+                raw_votes = await asyncio.wait_for(
+                    db.votes.find({"giveaway_id": giveaway_id}).to_list(None),
+                    timeout=_TIMEOUT
+                )
+                for v in raw_votes:
+                    v.pop("_id", None)
+                    all_votes.append(v)
+                print(f"[ARCHIVE] votes fetched: {len(all_votes)}", flush=True)
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
                 async with conn.execute(
-                    "SELECT * FROM votes WHERE giveaway_id=?", (giveaway_id,)
+                    "SELECT * FROM giveaways WHERE giveaway_id=?", (giveaway_id,)
                 ) as cur:
-                    all_votes = [dict(r) for r in await cur.fetchall()]
+                    row = await cur.fetchone()
+                if row:
+                    giveaway = dict(row)
+                    giveaway["prizes"]  = json.loads(giveaway["prizes"])
+                    giveaway["options"] = json.loads(giveaway["options"])
+                    giveaway["votes"]   = json.loads(giveaway["votes"])
+                    async with conn.execute(
+                        "SELECT * FROM votes WHERE giveaway_id=?", (giveaway_id,)
+                    ) as cur:
+                        all_votes = [dict(r) for r in await cur.fetchall()]
+    except asyncio.TimeoutError:
+        print(f"[ARCHIVE] TIMEOUT fetching giveaway data from DB after {_TIMEOUT}s!", flush=True)
+        logger.error("archive_and_purge: DB fetch timed out")
+        raise RuntimeError(f"MongoDB timed out after {_TIMEOUT}s — check your MONGO_URI connection")
 
     if not giveaway:
         print(f"[ARCHIVE] ERROR: giveaway {giveaway_id} not found in DB!", flush=True)
@@ -98,6 +101,7 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
         return False
 
     # ── 2. Build archive payload ──────────────────────────────
+    print(f"[ARCHIVE] Building JSON payload...", flush=True)
     archive = {
         "archived_at": datetime.now(timezone.utc).isoformat(),
         "giveaway":    giveaway,
@@ -107,26 +111,24 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     def _default(obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
-        # Handle MongoDB ObjectId and any other non-serializable types
         try:
             from bson import ObjectId
             if isinstance(obj, ObjectId):
                 return str(obj)
         except ImportError:
             pass
-        return str(obj)  # Fallback: convert anything else to string
+        return str(obj)
 
     try:
         json_bytes = json.dumps(archive, default=_default, ensure_ascii=False, indent=2).encode()
         print(f"[ARCHIVE] JSON serialized OK, size={len(json_bytes)} bytes", flush=True)
     except Exception as e:
         print(f"[ARCHIVE] JSON serialization FAILED: {e}", flush=True)
-        logger.error(f"archive_and_purge: JSON serialization failed: {e}")
         raise
 
     file_obj = io.BytesIO(json_bytes)
     file_obj.name = f"giveaway_{giveaway_id}.json"
-    file_obj.seek(0)  # Ensure pointer is at start before sending
+    file_obj.seek(0)
 
     title       = giveaway.get("title", giveaway_id)
     total_v     = giveaway.get("total_votes", 0)
@@ -151,36 +153,45 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     # ── 3. Send to DATABASE_CHANNEL ───────────────────────────
     print(f"[ARCHIVE] Sending document to db_channel={db_channel}", flush=True)
     try:
-        sent_msg = await send_bot.send_document(
-            db_channel,
-            document=file_obj,
-            caption=caption,
-            parse_mode="HTML",
+        sent_msg = await asyncio.wait_for(
+            send_bot.send_document(
+                db_channel,
+                document=file_obj,
+                caption=caption,
+                parse_mode="HTML",
+            ),
+            timeout=_TIMEOUT
         )
         file_id = sent_msg.document.file_id
         print(f"[ARCHIVE] Document sent OK, file_id={file_id}", flush=True)
         logger.info(f"✅ Giveaway {giveaway_id} archived to DATABASE_CHANNEL")
+    except asyncio.TimeoutError:
+        print(f"[ARCHIVE] TIMEOUT sending document after {_TIMEOUT}s!", flush=True)
+        raise RuntimeError(f"Telegram send_document timed out after {_TIMEOUT}s")
     except Exception as e:
         print(f"[ARCHIVE] send_document FAILED: {type(e).__name__}: {e}", flush=True)
         logger.error(f"archive_and_purge: failed to send to DATABASE_CHANNEL {db_channel!r}: {e}")
-        raise  # Re-raise so _archive_giveaway can show the real error to creator
+        raise
 
-    # ── 3b. Store enriched metadata for admin panel + /oldgiveaway ──
+    # ── 3b. Store metadata ────────────────────────────────────
     try:
         if is_mongo():
-            await get_db().giveaway_archive_refs.update_one(
-                {"giveaway_id": giveaway_id},
-                {"$set": {
-                    "giveaway_id": giveaway_id,
-                    "file_id":     file_id,
-                    "title":       title,
-                    "creator_id":  creator_id,
-                    "created_at":  created_at,
-                    "end_date":    end_date,
-                    "total_votes": total_v,
-                    "archived_at": archived_at,
-                }},
-                upsert=True,
+            await asyncio.wait_for(
+                get_db().giveaway_archive_refs.update_one(
+                    {"giveaway_id": giveaway_id},
+                    {"$set": {
+                        "giveaway_id": giveaway_id,
+                        "file_id":     file_id,
+                        "title":       title,
+                        "creator_id":  creator_id,
+                        "created_at":  created_at,
+                        "end_date":    end_date,
+                        "total_votes": total_v,
+                        "archived_at": archived_at,
+                    }},
+                    upsert=True,
+                ),
+                timeout=_TIMEOUT
             )
         else:
             import aiosqlite
@@ -205,16 +216,28 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
                      created_at, end_date, total_v, archived_at)
                 )
                 await conn.commit()
+    except asyncio.TimeoutError:
+        print(f"[ARCHIVE] TIMEOUT storing metadata — continuing to purge anyway", flush=True)
     except Exception as e:
         logger.warning(f"archive_and_purge: failed to store metadata: {e}")
 
     # ── 4. Purge from live database ───────────────────────────
+    print(f"[ARCHIVE] Purging giveaway from live DB...", flush=True)
     try:
         if is_mongo():
             db = get_db()
-            await db.giveaways.delete_one({"giveaway_id": giveaway_id})
-            await db.votes.delete_many({"giveaway_id": giveaway_id})
-            await db.panels.delete_many({"ref_id": giveaway_id, "panel_type": "giveaway"})
+            await asyncio.wait_for(
+                db.giveaways.delete_one({"giveaway_id": giveaway_id}),
+                timeout=_TIMEOUT
+            )
+            await asyncio.wait_for(
+                db.votes.delete_many({"giveaway_id": giveaway_id}),
+                timeout=_TIMEOUT
+            )
+            await asyncio.wait_for(
+                db.panels.delete_many({"ref_id": giveaway_id, "panel_type": "giveaway"}),
+                timeout=_TIMEOUT
+            )
         else:
             import aiosqlite
             async with aiosqlite.connect(get_sqlite_path()) as conn:
@@ -228,7 +251,11 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
                 except Exception:
                     pass
                 await conn.commit()
+        print(f"[ARCHIVE] Purge complete.", flush=True)
         logger.info(f"🗑 Giveaway {giveaway_id} purged from live DB after archiving")
+    except asyncio.TimeoutError:
+        print(f"[ARCHIVE] TIMEOUT during purge — data was archived but not deleted from DB", flush=True)
+        logger.error("archive_and_purge: purge timed out")
     except Exception as e:
         logger.error(f"archive_and_purge: purge failed: {e}")
 
@@ -236,7 +263,6 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
 
 
 async def get_old_giveaways(limit: int = 200) -> list[dict]:
-    """Return all archived giveaway metadata, newest first."""
     from utils.db import get_db, is_mongo, get_sqlite_path
     try:
         if is_mongo():
@@ -264,7 +290,6 @@ async def get_old_giveaways(limit: int = 200) -> list[dict]:
 
 
 async def delete_old_giveaways_before(months: int) -> int:
-    """Delete archive metadata older than `months` months. Returns count deleted."""
     from utils.db import get_db, is_mongo, get_sqlite_path
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=months * 30)).isoformat()
