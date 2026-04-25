@@ -37,6 +37,7 @@ async def _init_sqlite():
                 is_active INTEGER DEFAULT 1,
                 end_time TEXT,
                 message_id INTEGER,
+                allow_winner_dm INTEGER DEFAULT 0,
                 created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS votes (
@@ -91,6 +92,12 @@ async def _init_sqlite():
             );
         """)
         await conn.commit()
+        # Migration: add allow_winner_dm column if missing (for existing DBs)
+        try:
+            await conn.execute("ALTER TABLE giveaways ADD COLUMN allow_winner_dm INTEGER DEFAULT 0")
+            await conn.commit()
+        except Exception:
+            pass  # Column already exists
     print("✅ SQLite initialised at", sqlite_path)
 
 
