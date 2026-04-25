@@ -34,6 +34,11 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
         logger.warning("archive_and_purge: DATABASE_CHANNEL not set — skipping archive")
         return False
 
+    # Always use the main bot to send to DATABASE_CHANNEL
+    # (the bot passed in may be a clone bot that isn't admin in the channel)
+    from utils.log_utils import get_main_bot
+    send_bot = get_main_bot() or bot
+
     from utils.db import get_db, is_mongo, get_sqlite_path
 
     # ── 1. Fetch full data ────────────────────────────────────
@@ -109,7 +114,7 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
 
     # ── 3. Send to DATABASE_CHANNEL ───────────────────────────
     try:
-        sent_msg = await bot.send_document(
+        sent_msg = await send_bot.send_document(
             db_channel,
             document=file_obj,
             caption=caption,
