@@ -127,11 +127,35 @@ def build_clone_router(clone_token: str, main_bot_username: str) -> Router:
                 return  # Do NOT register until they actually join
 
         # Returning user after restart — restore their state, skip re-registration flow
+        # BUT if they came via a referral link and aren't already credited, count it
         if existing and not referred_by:
             await message.answer(
                 welcome + footer,
                 parse_mode="HTML"
             )
+            return
+
+        # If existing user came via a NEW referral link, count the referral
+        # (they may have been registered without a referral, then someone sent them a link)
+        if existing and referred_by:
+            # Only count if they were not originally referred by this person
+            if existing.get("referred_by") != referred_by:
+                from models.referral import update_referral_source
+                try:
+                    await update_referral_source(clone_token, message.from_user.id, referred_by)
+                    updated_referrer = await get_referral_user(clone_token, referred_by)
+                    new_count = updated_referrer.get("refer_count", 0) if updated_referrer else 0
+                    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+                    await bot.send_message(
+                        referred_by,
+                        f"🎉 <b>New Referral!</b>\n\n"
+                        f"👤 {username} joined using your link.\n"
+                        f"🔗 Your total referrals: <b>{new_count}</b>",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            await message.answer(welcome + footer, parse_mode="HTML")
             return
 
         is_new = await add_referral_user(
