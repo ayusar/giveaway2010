@@ -23,6 +23,7 @@ async def _init_mongo():
     await db.referrals.create_index([("clone_token", 1), ("user_id", 1)], unique=True)
     await db.referrals.create_index("referred_by")
     await db.main_bot_users.create_index("user_id", unique=True)
+    await db.premium_users.create_index("user_id", unique=True)
     print("✅ MongoDB connected")
 
 
@@ -94,6 +95,12 @@ async def _init_sqlite():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE,
                 password TEXT
+            );
+            CREATE TABLE IF NOT EXISTS premium_users (
+                user_id INTEGER PRIMARY KEY,
+                granted_by INTEGER,
+                expires_at TEXT,
+                granted_at TEXT
             );
         """)
         await conn.commit()
