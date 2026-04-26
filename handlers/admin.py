@@ -198,3 +198,95 @@ async def ban_user(message: Message):
             )
             await conn.commit()
     await message.answer(f"✅ User <code>{user_id}</code> banned globally.", parse_mode="HTML")
+
+
+@router.message(Command("addpremium"))
+async def cmd_add_premium(message: Message):
+    if not is_superadmin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer(
+            "Usage: <code>/addpremium &lt;user_id&gt; &lt;days&gt;</code>\n"
+            "Example: <code>/addpremium 123456789 30</code>",
+            parse_mode="HTML"
+        )
+        return
+    try:
+        user_id = int(parts[1])
+        days    = int(parts[2])
+        if days <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Invalid user_id or days. Both must be positive numbers.")
+        return
+
+    from utils.premium import add_premium
+    expires_at = await add_premium(user_id, days, granted_by=message.from_user.id)
+    await message.answer(
+        f"⭐ <b>Premium granted!</b>\n\n"
+        f"👤 User: <code>{user_id}</code>\n"
+        f"📅 Duration: <b>{days} days</b>\n"
+        f"⏳ Expires: <b>{expires_at.strftime('%Y-%m-%d')}</b>\n\n"
+        f"✅ Bot stamp removed from their giveaways & messages.",
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("removepremium"))
+async def cmd_remove_premium(message: Message):
+    if not is_superadmin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Usage: <code>/removepremium &lt;user_id&gt;</code>", parse_mode="HTML")
+        return
+    try:
+        user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Invalid user ID.")
+        return
+
+    from utils.premium import remove_premium
+    removed = await remove_premium(user_id)
+    if removed:
+        await message.answer(
+            f"✅ Premium removed for <code>{user_id}</code>.\n"
+            f"Stamp will appear on their future giveaways & messages.",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(f"❌ User <code>{user_id}</code> had no premium.", parse_mode="HTML")
+
+
+@router.message(Command("checkpremium"))
+async def cmd_check_premium(message: Message):
+    if not is_superadmin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Usage: <code>/checkpremium &lt;user_id&gt;</code>", parse_mode="HTML")
+        return
+    try:
+        user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Invalid user ID.")
+        return
+
+    from utils.premium import get_premium_info, is_premium
+    info   = await get_premium_info(user_id)
+    active = await is_premium(user_id)
+    if not info:
+        await message.answer(f"❌ User <code>{user_id}</code> has no premium.", parse_mode="HTML")
+        return
+
+    expires = info.get("expires_at", "?")[:10]
+    status  = "⭐ Active" if active else "❌ Expired"
+    await message.answer(
+        f"<b>Premium Status</b>\n\n"
+        f"👤 User: <code>{user_id}</code>\n"
+        f"Status: {status}\n"
+        f"⏳ Expires: <b>{expires}</b>\n"
+        f"📅 Granted: {info.get('granted_at','?')[:10]}",
+        parse_mode="HTML"
+    )
