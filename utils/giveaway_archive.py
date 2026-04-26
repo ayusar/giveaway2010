@@ -220,7 +220,7 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     except Exception as e:
         logger.warning(f"archive_and_purge: failed to store metadata: {e}")
 
-    # ── 4. Purge from live database ───────────────────────────
+    # ── 4. Purge from live database (keep panels so links stay valid) ──
     print(f"[ARCHIVE] Purging giveaway from live DB...", flush=True)
     try:
         if is_mongo():
@@ -233,25 +233,17 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
                 db.votes.delete_many({"giveaway_id": giveaway_id}),
                 timeout=_TIMEOUT
             )
-            await asyncio.wait_for(
-                db.panels.delete_many({"ref_id": giveaway_id, "panel_type": "giveaway"}),
-                timeout=_TIMEOUT
-            )
+            # NOTE: panels are NOT deleted — kept so user panel links remain valid
+            # Panel will serve archived data from Telegram DB channel
         else:
             import aiosqlite
             async with aiosqlite.connect(get_sqlite_path()) as conn:
                 await conn.execute("DELETE FROM giveaways WHERE giveaway_id=?", (giveaway_id,))
                 await conn.execute("DELETE FROM votes WHERE giveaway_id=?", (giveaway_id,))
-                try:
-                    await conn.execute(
-                        "DELETE FROM panels WHERE ref_id=? AND panel_type='giveaway'",
-                        (giveaway_id,)
-                    )
-                except Exception:
-                    pass
+                # NOTE: panels are NOT deleted — kept so user panel links remain valid
                 await conn.commit()
-        print(f"[ARCHIVE] Purge complete.", flush=True)
-        logger.info(f"🗑 Giveaway {giveaway_id} purged from live DB after archiving")
+        print(f"[ARCHIVE] Purge complete (panels preserved).", flush=True)
+        logger.info(f"🗑 Giveaway {giveaway_id} purged from live DB after archiving (panels kept)")
     except asyncio.TimeoutError:
         print(f"[ARCHIVE] TIMEOUT during purge — data was archived but not deleted from DB", flush=True)
         logger.error("archive_and_purge: purge timed out")
