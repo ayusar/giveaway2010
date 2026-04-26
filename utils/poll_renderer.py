@@ -15,7 +15,8 @@ def render_giveaway_message(
     votes: Dict[int, int],
     total_votes: int,
     is_active: bool = True,
-    end_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None,
+    hide_stamp: bool = False,
 ) -> str:
     medals = ["🥇", "🥈", "🥉"]
     prizes_text = "\n".join(
@@ -38,14 +39,15 @@ def render_giveaway_message(
 
     lines.append("🔒 Poll closed" if not is_active else "✅ Poll active — tap an option to vote!")
 
-    # Always show which bot created this poll
-    try:
-        import utils.clone_manager as _cm
-        main_bot = getattr(_cm, "MAIN_BOT_USERNAME", None)
-        if main_bot:
-            lines.append(f"\n🤖 <i>This poll was created via @{main_bot}</i>")
-    except Exception:
-        pass
+    # Show bot stamp unless creator has premium
+    if not hide_stamp:
+        try:
+            import utils.clone_manager as _cm
+            main_bot = getattr(_cm, "MAIN_BOT_USERNAME", None)
+            if main_bot:
+                lines.append(f"\n🤖 <i>This poll was created via @{main_bot}</i>")
+        except Exception:
+            pass
 
     return "\n".join(lines)
 
