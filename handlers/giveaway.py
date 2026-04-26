@@ -14,6 +14,7 @@ from models.giveaway import (
     close_giveaway, update_giveaway_message_id
 )
 from utils.poll_renderer import render_giveaway_message, build_vote_keyboard, build_verify_join_keyboard
+from utils.premium import is_premium
 from utils.log_utils import check_force_join
 
 router = Router()
@@ -354,11 +355,13 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
         allow_winner_dm=data.get("allow_winner_dm", False),
     )
 
+    _creator_premium = await is_premium(callback.from_user.id)
     text     = render_giveaway_message(
         title=data["title"], prizes=data["prizes"],
         options=data["options"], votes={},
         total_votes=0, is_active=True,
         end_time=data.get("end_time"),
+        hide_stamp=_creator_premium,
     )
     keyboard = build_vote_keyboard(giveaway["giveaway_id"], data["options"], is_active=True)
 
