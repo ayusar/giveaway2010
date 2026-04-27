@@ -78,21 +78,20 @@ async def my_giveaways(event):
     has_anything = active_giveaways or archived_giveaways or clone_bot
     if not has_anything:
         await msg.answer(
-            "📋 <b>My Dashboard</b>\n\n"
-            "You haven't created anything yet.\n\n"
-            "• Use /creategiveaway to create a poll\n"
-            "• Use /clonebot to set up a referral bot",
+            "📋 <b>My Giveaways</b>\n\n"
+            "You haven't created any giveaways yet.\n\n"
+            "• Tap <b>Create Giveaway</b> to get started!\n"
+            "• Use /creategiveaway anytime",
             parse_mode="HTML"
         )
         return
 
-    lines = ["📋 <b>My Dashboard</b>\n"]
+    lines = ["📋 <b>My Giveaways</b>\n"]
 
     # Clone bot section
     if clone_bot:
         username = clone_bot.get("bot_username", "unknown")
         channel = clone_bot.get("channel_link", "—") or "—"
-        # Get referral user count
         try:
             if is_mongo():
                 db = get_db()
@@ -139,24 +138,9 @@ async def my_giveaways(event):
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "menu:help")
-async def menu_help(callback: CallbackQuery):
+@router.callback_query(F.data == "menu:refer_giveaway")
+async def menu_refer_giveaway(callback: CallbackQuery):
+    """Redirect refer giveaway to the clone bot flow."""
     await callback.answer()
-    await callback.message.answer(
-        "📖 <b>Help Guide</b>\n\n"
-        "<b>Giveaway Poll:</b>\n"
-        "1. Add this bot as admin in your channel\n"
-        "2. Use /creategiveaway and follow the steps\n"
-        "3. The poll posts live with vote bars\n"
-        "4. Users must join your channel to vote\n\n"
-        "<b>Clone Refer Bot:</b>\n"
-        "1. Create a bot via @BotFather\n"
-        "2. Use /clonebot and paste your token\n"
-        "3. Share your bot — it tracks referrals!\n\n"
-        "<b>Commands:</b>\n"
-        "/creategiveaway — New giveaway poll\n"
-        "/mygiveaways — Your dashboard\n"
-        "/clonebot — Set up referral bot\n"
-        "/deleteclone — Remove your clone bot",
-        parse_mode="HTML"
-    )
+    from handlers.clone_bot import start_clone_bot
+    await start_clone_bot(callback)
