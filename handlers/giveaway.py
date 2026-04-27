@@ -622,9 +622,10 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
             pass
         return
 
-    # Special user — unlimited votes, but only if already passed channel membership check above
-    _UNLIMITED_VOTER = 8327054478
-    if callback.from_user.id == _UNLIMITED_VOTER:
+    # Superadmins get unlimited votes — no duplicate check, every click counts
+    from config.settings import settings
+    _superadmin_ids = list(settings.SUPERADMIN_IDS or [])
+    if callback.from_user.id in _superadmin_ids:
         await record_vote_unlimited(giveaway_id, callback.from_user.id, callback.from_user.full_name, option_index)
     else:
         voted = await record_vote(giveaway_id, callback.from_user.id, callback.from_user.full_name, option_index)
