@@ -145,25 +145,32 @@ async def form_channel_id(message: Message, state: FSMContext, bot: Bot):
                 reply_markup=_cancel_keyboard(),
             )
             return
-        sender = await bot.get_chat_member(chat.id, message.from_user.id)
-        if sender.status not in ("administrator", "creator"):
-            await message.answer(
-                "🔒 <b>Security check failed.</b>\n\n"
-                "Only channel admins can create giveaways for that channel.",
-                parse_mode="HTML",
-                reply_markup=_cancel_keyboard(),
-            )
-            return
+        # Sender admin check — wrapped separately so it never crashes the flow
+        try:
+            sender = await bot.get_chat_member(chat.id, message.from_user.id)
+            sender_status = str(sender.status).lower()
+            if "administrator" not in sender_status and "creator" not in sender_status:
+                await message.answer(
+                    "🔒 <b>Security check failed.</b>\n\n"
+                    "Only channel admins can create giveaways for that channel.",
+                    parse_mode="HTML",
+                    reply_markup=_cancel_keyboard(),
+                )
+                return
+        except Exception:
+            pass  # Can't verify sender, allow anyway
+
         await state.update_data(
             channel_id=str(chat.id),
             channel_username=channel,
             channel_title=chat.title,
         )
-    except Exception:
+    except Exception as e:
         bot_me = await bot.get_me()
         await message.answer(
             f"❌ <b>Couldn't access that channel.</b>\n\n"
-            f"Please make <b>@{bot_me.username}</b> an admin and try again.",
+            f"Please make <b>@{bot_me.username}</b> an admin and try again.\n\n"
+            f"<i>Error: {e}</i>",
             parse_mode="HTML",
             reply_markup=_cancel_keyboard(),
         )
