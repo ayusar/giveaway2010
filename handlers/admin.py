@@ -222,7 +222,11 @@ async def cmd_add_premium(message: Message):
         return
 
     from utils.premium import add_premium
+    from datetime import datetime, timezone
+    granted_at = datetime.now(timezone.utc)
     expires_at = await add_premium(user_id, days, granted_by=message.from_user.id)
+
+    # ── Notify the admin ──────────────────────────────────────
     await message.answer(
         f"⭐ <b>Premium granted!</b>\n\n"
         f"👤 User: <code>{user_id}</code>\n"
@@ -231,6 +235,56 @@ async def cmd_add_premium(message: Message):
         f"✅ Bot stamp removed from their giveaways & messages.",
         parse_mode="HTML"
     )
+
+    # ── Notify the user with their premium details ────────────
+    try:
+        # Try to get panel credentials if available
+        panel_username = None
+        panel_password = None
+        try:
+            if is_mongo():
+                doc = await get_db().panel_users.find_one({"user_id": user_id})
+                if doc:
+                    panel_username = doc.get("username")
+                    panel_password = "****"  # never expose real password
+            else:
+                import aiosqlite
+                async with aiosqlite.connect(get_sqlite_path()) as conn:
+                    conn.row_factory = aiosqlite.Row
+                    async with conn.execute(
+                        "SELECT username FROM panel_users WHERE id=?", (user_id,)
+                    ) as cur:
+                        row = await cur.fetchone()
+                    if row:
+                        panel_username = row["username"]
+                        panel_password = "****"
+        except Exception:
+            pass
+
+        creds_block = ""
+        if panel_username:
+            creds_block = (
+                f"\n👤 Username : <code>{panel_username}</code>\n"
+                f"🔑 Password : <code>{panel_password}</code>\n"
+                f"🌐 To access user panel\n"
+            )
+
+        await message.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>Congratulations!</b> Now you are a Premium Member\n\n"
+                f"{creds_block}"
+                f"\n📅 Date    : <b>{granted_at.strftime('%Y-%m-%d')}</b>\n"
+                f"⏳ Till      : <b>{expires_at.strftime('%Y-%m-%d')}</b>\n\n"
+                "✨ Enjoy your premium benefits:\n"
+                "• No bot stamp on your giveaways\n"
+                "• Unlimited giveaways at once\n"
+                "• Priority support"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass  # User may have blocked the bot
 
 
 @router.message(Command("removepremium"))
