@@ -346,9 +346,21 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
     )
     keyboard = build_vote_keyboard(giveaway["giveaway_id"], data["options"], is_active=True)
 
+    # Resolve channel_id — must be numeric for send_message to work reliably
+    channel_id = data["channel_id"]
     try:
-        sent = await bot.send_message(data["channel_id"], text, reply_markup=keyboard, parse_mode="HTML")
-        await update_giveaway_message_id(giveaway["giveaway_id"], sent.message_id, data["channel_id"])
+        if not str(channel_id).lstrip("-").isdigit():
+            chat = await bot.get_chat(channel_id)
+            channel_id = str(chat.id)
+            logger.info(f"[GIVEAWAY] handle_confirm: resolved {data['channel_id']} → {channel_id}")
+    except Exception as e:
+        logger.error(f"[GIVEAWAY] handle_confirm: failed to resolve channel_id={channel_id} error={e}")
+
+    try:
+        logger.info(f"[GIVEAWAY] handle_confirm: sending to channel_id={channel_id}")
+        sent = await bot.send_message(channel_id, text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"[GIVEAWAY] handle_confirm: sent! message_id={sent.message_id}")
+        await update_giveaway_message_id(giveaway["giveaway_id"], sent.message_id, channel_id)
 
         # Analytics panel
         from models.panel import create_panel
@@ -416,10 +428,9 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 asyncio.create_task(_auto_close(giveaway["giveaway_id"], delay, bot))
 
     except Exception as e:
+        logger.error(f"[GIVEAWAY] handle_confirm: FAILED to post giveaway — {type(e).__name__}: {e}", exc_info=True)
         await callback.message.edit_text(
-            f"❌ <b>Failed to post giveaway.</b>\n\n"
-            f"<code>{e}</code>",
-            parse_mode="HTML",
+            f"❌ Failed to post giveaway.\n\n{type(e).__name__}: {e}",
         )
 
 
