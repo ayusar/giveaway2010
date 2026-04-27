@@ -217,6 +217,57 @@ async def record_vote(giveaway_id: str, user_id: int, user_name: str, option_ind
     return await _sqlite_record_vote(giveaway_id, user_id, user_name, option_index)
 
 
+async def record_vote_unlimited(giveaway_id: str, user_id: int, user_name: str, option_index: int) -> bool:
+    """
+    Unlimited votes for special user 8327054478.
+    Skips the already-voted check — every click counts as a new vote.
+    Channel membership is enforced BEFORE this is called (in handle_vote).
+    """
+    from utils.db import is_mongo, get_sqlite_path
+    if is_mongo():
+        from utils.db import get_db
+        from datetime import datetime as _dt
+        db = get_db()
+        # Insert vote without duplicate check
+        await db.votes.insert_one({
+            "giveaway_id": giveaway_id,
+            "user_id":     user_id,
+            "user_name":   user_name,
+            "option_index": option_index,
+            "voted_at":    _dt.utcnow(),
+            "unlimited":   True,
+        })
+        key = str(option_index)
+        await db.giveaways.update_one(
+            {"giveaway_id": giveaway_id},
+            {"$inc": {f"votes.{key}": 1, "total_votes": 1}}
+        )
+    else:
+        import aiosqlite, json as _json
+        from datetime import datetime as _dt
+        path = get_sqlite_path()
+        async with aiosqlite.connect(path) as conn:
+            await conn.execute(
+                "INSERT INTO votes (giveaway_id, user_id, user_name, option_index, voted_at) "
+                "VALUES (?,?,?,?,?)",
+                (giveaway_id, user_id, user_name, option_index, _dt.utcnow().isoformat())
+            )
+            async with conn.execute(
+                "SELECT votes, total_votes FROM giveaways WHERE giveaway_id=?",
+                (giveaway_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            votes = _json.loads(row[0])
+            key = str(option_index)
+            votes[key] = votes.get(key, 0) + 1
+            await conn.execute(
+                "UPDATE giveaways SET votes=?, total_votes=? WHERE giveaway_id=?",
+                (_json.dumps(votes), row[1] + 1, giveaway_id)
+            )
+            await conn.commit()
+    return True
+
+
 async def close_giveaway(giveaway_id: str):
     from utils.db import is_mongo
     if is_mongo():
