@@ -648,61 +648,9 @@ select.inp{cursor:pointer}
       <div class="panel">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>User</th><th>Telegram ID</th><th>Plan</th><th>Bots</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>User</th><th>Telegram ID</th><th>Plan</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="premium-tb">
-              <!-- Demo data — replace with API fetch -->
-              <tr class="premium-row">
-                <td><strong>@priya_win</strong><div style="font-size:10px;color:var(--muted)">Priya Sharma</div></td>
-                <td class="mono" style="user-select:all">589234710</td>
-                <td><span class="badge bgold"><span class="dot do"></span>VIP</span></td>
-                <td style="font-family:'JetBrains Mono',monospace">∞</td>
-                <td><span style="color:var(--green);font-size:11px;font-family:'JetBrains Mono',monospace">2027-01-15</span></td>
-                <td><span class="badge bg"><span class="dot dg"></span>Active</span></td>
-                <td><div style="display:flex;gap:5px">
-                  <button class="btn btn-ghost btn-xs" onclick="toast('📋 ID copied','ok')">📋</button>
-                  <button class="btn btn-gold btn-xs" onclick="editPremium(589234710)">✏️ Edit</button>
-                  <button class="btn btn-danger btn-xs" onclick="revokePremium(589234710,'priya_win')">🚫 Revoke</button>
-                </div></td>
-              </tr>
-              <tr class="premium-row">
-                <td><strong>@amit_rox</strong><div style="font-size:10px;color:var(--muted)">Amit Kumar</div></td>
-                <td class="mono" style="user-select:all">391827465</td>
-                <td><span class="badge bgold"><span class="dot do"></span>VIP</span></td>
-                <td style="font-family:'JetBrains Mono',monospace">∞</td>
-                <td><span style="color:var(--green);font-size:11px;font-family:'JetBrains Mono',monospace">2026-12-01</span></td>
-                <td><span class="badge bg"><span class="dot dg"></span>Active</span></td>
-                <td><div style="display:flex;gap:5px">
-                  <button class="btn btn-ghost btn-xs" onclick="toast('📋 ID copied','ok')">📋</button>
-                  <button class="btn btn-gold btn-xs" onclick="editPremium(391827465)">✏️ Edit</button>
-                  <button class="btn btn-danger btn-xs" onclick="revokePremium(391827465,'amit_rox')">🚫 Revoke</button>
-                </div></td>
-              </tr>
-              <tr class="premium-row">
-                <td><strong>@sona_1999</strong><div style="font-size:10px;color:var(--muted)">Sona Verma</div></td>
-                <td class="mono" style="user-select:all">748291034</td>
-                <td><span class="badge bgold"><span class="dot do"></span>VIP</span></td>
-                <td style="font-family:'JetBrains Mono',monospace">∞</td>
-                <td><span style="color:var(--yellow);font-size:11px;font-family:'JetBrains Mono',monospace">2026-05-03</span></td>
-                <td><span class="badge by"><span class="dot dy"></span>Expiring</span></td>
-                <td><div style="display:flex;gap:5px">
-                  <button class="btn btn-ghost btn-xs" onclick="toast('📋 ID copied','ok')">📋</button>
-                  <button class="btn btn-gold btn-xs" onclick="editPremium(748291034)">✏️ Renew</button>
-                  <button class="btn btn-danger btn-xs" onclick="revokePremium(748291034,'sona_1999')">🚫 Revoke</button>
-                </div></td>
-              </tr>
-              <tr class="premium-row">
-                <td><strong>@rehan_b</strong><div style="font-size:10px;color:var(--muted)">Rehan Baig</div></td>
-                <td class="mono" style="user-select:all">283746192</td>
-                <td><span class="badge bgold"><span class="dot do"></span>VIP</span></td>
-                <td style="font-family:'JetBrains Mono',monospace">∞</td>
-                <td><span style="color:var(--red);font-size:11px;font-family:'JetBrains Mono',monospace">2026-04-10</span></td>
-                <td><span class="badge br"><span class="dot dr"></span>Expired</span></td>
-                <td><div style="display:flex;gap:5px">
-                  <button class="btn btn-ghost btn-xs" onclick="toast('📋 ID copied','ok')">📋</button>
-                  <button class="btn btn-gold btn-xs" onclick="editPremium(283746192)">✏️ Renew</button>
-                  <button class="btn btn-danger btn-xs" onclick="revokePremium(283746192,'rehan_b')">🚫 Revoke</button>
-                </div></td>
-              </tr>
+              <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--muted)">⏳ Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -742,6 +690,31 @@ select.inp{cursor:pointer}
           </div>
         </div>
       </div>
+
+      <!-- Extend Premium Modal -->
+      <div class="modal-overlay" id="extend-modal">
+        <div class="modal-box" style="max-width:420px">
+          <div class="modal-head">
+            <h3>🔄 Extend Premium</h3>
+            <button class="modal-close" onclick="closeExtendPremiumModal()">✕</button>
+          </div>
+          <div class="pb" style="padding:22px 24px">
+            <div class="form-group">
+              <div class="form-label">Telegram User ID</div>
+              <input class="inp" id="extend-uid" readonly style="opacity:.7">
+            </div>
+            <div class="form-group">
+              <div class="form-label">Days to Add</div>
+              <input class="inp" id="extend-days" type="number" value="30" min="1" max="3650">
+              <div style="font-size:11px;color:var(--muted);margin-top:4px">Days will be added on top of current expiry date</div>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+              <button class="btn btn-ghost" onclick="closeExtendPremiumModal()">Cancel</button>
+              <button class="btn btn-gold" onclick="doExtendPremium()">🔄 Extend</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══ BOT USERS API ═══ -->
@@ -750,23 +723,19 @@ select.inp{cursor:pointer}
         <div>
           <!-- Live user fetch -->
           <div class="panel" style="margin-bottom:14px">
-            <div class="ph"><h2>🔍 Fetch Bot Users via API</h2></div>
+            <div class="ph"><h2>🔍 Bot Users</h2></div>
             <div class="pb">
               <div class="form-group">
-                <div class="form-label">Bot Token</div>
-                <input class="inp" id="bu-token" type="password" placeholder="Enter bot token (e.g. 123456:ABC-DEF...)">
-              </div>
-              <div class="form-group">
-                <div class="form-label">Fetch Type</div>
-                <select class="inp" id="bu-type">
+                <div class="form-label">Filter</div>
+                <select class="inp" id="bu-type" onchange="fetchBotUsers()">
                   <option value="all">All Users</option>
-                  <option value="active">Active (last 7 days)</option>
+                  <option value="active">Active</option>
                   <option value="banned">Banned Users</option>
                   <option value="premium">Premium Only</option>
                 </select>
               </div>
               <div class="form-row" style="gap:8px">
-                <button class="btn btn-primary" style="flex:1" onclick="fetchBotUsers()">⚡ Fetch Live Users</button>
+                <button class="btn btn-primary" style="flex:1" onclick="fetchBotUsers()">⚡ Load Live Users</button>
                 <button class="btn btn-ghost" onclick="clearBotUsers()">Clear</button>
               </div>
             </div>
@@ -1074,17 +1043,7 @@ select.inp{cursor:pointer}
           </div>
         </div>
         <div class="pb" id="log-stream" style="max-height:500px;overflow-y:auto;padding:14px 20px">
-          <!-- demo logs -->
-          <div class="log-entry"><div class="log-dot" style="background:var(--green)"></div><div><div class="log-msg">✅ User <strong>@priya_win</strong> paid for VIP plan — $49.00</div><div class="log-time">2026-04-26 14:32:01</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--cyan)"></div><div><div class="log-msg">📢 Broadcast sent to 2,132 users (98.2% delivered)</div><div class="log-time">2026-04-26 14:10:44</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--red)"></div><div><div class="log-msg">🚫 User <strong>591827364</strong> banned by admin</div><div class="log-time">2026-04-26 13:58:22</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--accent)"></div><div><div class="log-msg">🗳 Giveaway #284 created by @RoyalReferBot — "Spring iPhone Giveaway"</div><div class="log-time">2026-04-26 13:44:17</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--yellow)"></div><div><div class="log-msg">⚠️ Redis cache latency spike: 480ms avg (threshold: 200ms)</div><div class="log-time">2026-04-26 13:30:08</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--green)"></div><div><div class="log-msg">🤖 New clone bot @NewTestBot registered by user 391827465</div><div class="log-time">2026-04-26 13:12:55</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--red)"></div><div><div class="log-msg">❌ API error 429 (Rate limit) from Telegram — auto-retry queued</div><div class="log-time">2026-04-26 12:58:34</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--cyan)"></div><div><div class="log-msg">🔗 Panel token <code style="background:var(--s3);padding:1px 4px;border-radius:3px;font-size:10px">abc123xyz</code> generated for @sona_1999</div><div class="log-time">2026-04-26 12:44:01</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--green)"></div><div><div class="log-msg">✅ Giveaway #281 closed — winner: @rehan_b (742 votes)</div><div class="log-time">2026-04-26 12:30:00</div></div></div>
-          <div class="log-entry"><div class="log-dot" style="background:var(--accent)"></div><div><div class="log-msg">📈 48 new users joined in last hour across all bots</div><div class="log-time">2026-04-26 12:00:00</div></div></div>
+          <div style="text-align:center;padding:24px;color:var(--muted)">⏳ Loading activity…</div>
         </div>
       </div>
     </div>
@@ -1095,6 +1054,39 @@ select.inp{cursor:pointer}
 <div class="toast" id="toast"></div>
 
 <script>
+// ── API base path (injected at serve time, fallback for dev) ──
+const API_BASE = '/adminpanel/royalisbest';
+
+// ── Safe fetch wrapper — always sends cookies, handles auth errors ──
+async function apiFetch(path, opts={}){
+  const url = path.startsWith('http') ? path : API_BASE + path;
+  const res = await fetch(url, {
+    credentials: 'same-origin',
+    ...opts,
+    headers: { ...(opts.headers||{}) }
+  });
+  if(res.status === 401){
+    toast('🔒 Session expired — please log in again','err');
+    setTimeout(()=>window.location.href = API_BASE.replace('/api','') + '/../login', 1500);
+    throw new Error('401 Unauthorized');
+  }
+  const ct = res.headers.get('content-type')||'';
+  if(!ct.includes('application/json')){
+    const text = await res.text();
+    // If we got an HTML page back, session likely expired
+    if(text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')){
+      toast('🔒 Session expired — please log in again','err');
+      setTimeout(()=>window.location.reload(), 2000);
+      throw new Error('Got HTML instead of JSON — session expired');
+    }
+    throw new Error('Non-JSON response: ' + text.slice(0,120));
+  }
+  return res.json();
+}
+
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 // ── Navigation ────────────────────────────────────────────────
 const TABS={
   overview:'Overview|Live stats and system health',
@@ -1121,7 +1113,7 @@ function show(name,el){
   if(name==='clones') loadClones();
   if(name==='giveaways') loadGiveaways();
   if(name==='panels') loadPanels();
-  if(name==='users') loadUsers(1);
+  if(name==='users'){ loadUsers(1); setTimeout(fetchBotUsers,300); }
   if(name==='oldgiveaways') loadOldGiveaways();
   if(name==='premium') loadPremiumStats();
   closeSidebar();
@@ -1138,7 +1130,7 @@ function toast(m,type='ok'){
 // ── Stats ────────────────────────────────────────────────────
 async function loadStats(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/stats')).json();
+    const d=await apiFetch('/api/stats');
     document.getElementById('s1').textContent=d.total_clones;
     document.getElementById('s2').textContent=(d.total_users||0).toLocaleString();
     document.getElementById('s3').textContent=d.active_polls;
@@ -1155,7 +1147,7 @@ async function loadStats(){
 
 async function loadBotStats(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/bot_stats')).json();
+    const d=await apiFetch('/api/bot_stats');
     document.getElementById('bs-users').textContent=(d.total_users||0).toLocaleString();
     document.getElementById('bs-live').textContent=(d.live_giveaways||0).toLocaleString();
     document.getElementById('bs-closed').textContent=(d.closed_giveaways||0).toLocaleString();
@@ -1165,7 +1157,7 @@ async function loadBotStats(){
 
 async function pollLiveUsers(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/live_users')).json();
+    const d=await apiFetch('/api/live_users');
     const cnt=d.count||0;
     const el=document.getElementById('live-user-count');
     if(el) el.textContent=cnt.toLocaleString();
@@ -1174,14 +1166,69 @@ async function pollLiveUsers(){
   }catch(e){}
 }
 
-function loadPremiumStats(){
-  // Demo values — replace with API call
-  document.getElementById('tier-vip').textContent='232';
-  document.getElementById('vip-active').textContent='198';
-  document.getElementById('vip-expiring').textContent='18';
-  document.getElementById('vip-expired').textContent='16';
-  document.getElementById('prem-cnt').textContent='232';
-  document.getElementById('premium-total').textContent='232';
+let _premiumData = [];
+async function loadPremiumStats(){
+  try{
+    const d = await apiFetch('/api/premium_users');
+    _premiumData = d.users || [];
+    const total    = _premiumData.length;
+    const active   = _premiumData.filter(u=>u.status==='active').length;
+    const expiring = _premiumData.filter(u=>u.status==='expiring').length;
+    const expired  = _premiumData.filter(u=>u.status==='expired').length;
+    document.getElementById('tier-vip').textContent      = total;
+    document.getElementById('vip-active').textContent    = active;
+    document.getElementById('vip-expiring').textContent  = expiring;
+    document.getElementById('vip-expired').textContent   = expired;
+    document.getElementById('prem-cnt').textContent      = total;
+    document.getElementById('premium-total').textContent = total;
+    renderPremiumTable(_premiumData);
+  }catch(e){
+    console.error('loadPremiumStats error',e);
+  }
+}
+
+function renderPremiumTable(users){
+  const tb = document.getElementById('premium-tb');
+  if(!users || users.length===0){
+    tb.innerHTML='<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--muted)">No premium users yet</td></tr>';
+    return;
+  }
+  tb.innerHTML = users.map(u=>{
+    const uid = u.user_id;
+    let badge, expColor;
+    if(u.status==='active'){
+      badge=`<span class="badge bg"><span class="dot dg"></span>Active</span>`;
+      expColor='var(--green)';
+    } else if(u.status==='expiring'){
+      badge=`<span class="badge by"><span class="dot dy"></span>Expiring</span>`;
+      expColor='var(--yellow)';
+    } else {
+      badge=`<span class="badge br"><span class="dot dr"></span>Expired</span>`;
+      expColor='var(--red)';
+    }
+    const actionLabel = u.status==='expired' ? '🔄 Renew' : '✏️ Extend';
+    return`<tr class="premium-row">
+      <td><strong>${escHtml(String(uid))}</strong></td>
+      <td class="mono" style="user-select:all">${uid}</td>
+      <td><span class="badge bgold"><span class="dot do"></span>VIP</span></td>
+      <td><span style="color:${expColor};font-size:11px;font-family:'JetBrains Mono',monospace">${u.expires_at||'—'}</span></td>
+      <td>${badge}</td>
+      <td><div style="display:flex;gap:5px">
+        <button class="btn btn-ghost btn-xs" onclick="navigator.clipboard.writeText('${uid}');toast('📋 ID copied','ok')">📋</button>
+        <button class="btn btn-gold btn-xs" onclick="openExtendPremiumModal(${uid})">${actionLabel}</button>
+        <button class="btn btn-danger btn-xs" onclick="revokePremium(${uid})">🚫 Revoke</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+function filterPremiumUsers(){
+  const q   = (document.getElementById('prem-search').value||'').toLowerCase();
+  const fil = document.getElementById('prem-filter').value;
+  let rows = _premiumData;
+  if(fil) rows = rows.filter(u=>u.status===fil);
+  if(q)   rows = rows.filter(u=>String(u.user_id).includes(q));
+  renderPremiumTable(rows);
 }
 
 // ── Charts ────────────────────────────────────────────────────
@@ -1205,7 +1252,7 @@ function renderCharts(d){
 // ── Clones ───────────────────────────────────────────────────
 async function loadClones(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/clones')).json();
+    const d=await apiFetch('/api/clones');
     document.getElementById('clone-cnt').textContent=d.clones.length;
     document.getElementById('clones-tb').innerHTML=d.clones.map(c=>{
       const banned=c.is_banned;
@@ -1247,7 +1294,7 @@ async function openCuModal(username,token){
   document.getElementById('cu-tb').innerHTML='';
   document.getElementById('cu-count').textContent='—';
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/clone_users?token='+encodeURIComponent(token)+'&username='+encodeURIComponent(username))).json();
+    const d=await(await apiFetch('/api/clone_users?token='+encodeURIComponent(token)+'&username='+encodeURIComponent(username)));
     _cuData=d.users||[];
     renderCuUsers(_cuData);
     document.getElementById('cu-subtitle').textContent='@'+username+' · '+_cuData.length+' users';
@@ -1281,7 +1328,7 @@ function closeCuModal(){document.getElementById('cu-modal').classList.remove('op
 // ── Giveaways ────────────────────────────────────────────────
 async function loadGiveaways(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/giveaways')).json();
+    const d=await apiFetch('/api/giveaways');
     document.getElementById('ga-cnt').textContent=d.giveaways.length;
     document.getElementById('ga-tb').innerHTML=d.giveaways.map(g=>`<tr>
       <td class="mono">${g.giveaway_id}</td>
@@ -1315,7 +1362,7 @@ async function openParticipants(gid){
   document.getElementById('part-empty').style.display='none';
   document.getElementById('part-tb').innerHTML='';
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/giveaway_participants?giveaway_id='+gid)).json();
+    const d=await(await apiFetch('/api/giveaway_participants?giveaway_id='+gid));
     _partData=d.participants||[];
     renderParts(_partData);
     document.getElementById('part-subtitle').textContent='#'+gid+' · '+_partData.length+' participants';
@@ -1341,7 +1388,7 @@ function closeParticipants(){document.getElementById('part-modal').classList.rem
 // ── Panels ───────────────────────────────────────────────────
 async function loadPanels(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/panels')).json();
+    const d=await apiFetch('/api/panels');
     document.getElementById('panel-cnt').textContent=d.panels.length;
     document.getElementById('panels-tb').innerHTML=d.panels.map(p=>`<tr>
       <td class="mono" style="user-select:all;font-size:11px">${p.token}</td>
@@ -1355,7 +1402,7 @@ async function loadPanels(){
 }
 async function deletePanel(token){
   if(!confirm('Delete panel '+token+'?'))return;
-  await fetch('/adminpanel/royalisbest/api/delete_panel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+  await apiFetch('/api/delete_panel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
   toast('✅ Panel deleted','ok');loadPanels();
 }
 
@@ -1363,7 +1410,7 @@ async function deletePanel(token){
 let _ogData=[];
 async function loadOldGiveaways(){
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/archive_list')).json();
+    const d=await apiFetch('/api/archive_list');
     _ogData=d.giveaways||[];
     renderOG(_ogData);
     document.getElementById('og-cnt').textContent=_ogData.length;
@@ -1389,24 +1436,24 @@ function showDeleteOldModal(){document.getElementById('og-delete-modal').style.d
 function closeDeleteOldModal(){document.getElementById('og-delete-modal').style.display='none'}
 async function confirmDeleteOld(){
   const months=parseInt(document.getElementById('og-months-input').value)||3;
-  await fetch('/adminpanel/royalisbest/api/delete_old_archives',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({months})});
+  await apiFetch('/api/delete_old_archives',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({months})});
   toast('🗑 Old records deleted','ok');closeDeleteOldModal();loadOldGiveaways();
 }
 
 // ── Clone ban/unban ──────────────────────────────────────────
 async function banClone(token,uname){
   if(!confirm('Ban bot @'+uname+'?'))return;
-  await fetch('/adminpanel/royalisbest/api/ban_clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+  await apiFetch('/api/ban_clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
   toast('🚫 Bot @'+uname+' banned','ok');loadClones();
 }
 async function unbanClone(token,uname){
   if(!confirm('Unban bot @'+uname+'?'))return;
-  await fetch('/adminpanel/royalisbest/api/unban_clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+  await apiFetch('/api/unban_clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
   toast('✅ Bot @'+uname+' unbanned','ok');loadClones();
 }
 async function closeGiveaway(gid){
   if(!confirm('Close giveaway #'+gid+'?'))return;
-  await fetch('/adminpanel/royalisbest/api/close_giveaway',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({giveaway_id:gid})});
+  await apiFetch('/api/close_giveaway',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({giveaway_id:gid})});
   toast('⏹ Giveaway closed','ok');loadGiveaways();
 }
 
@@ -1419,7 +1466,7 @@ async function loadUsers(page=1){
   _userSearch=document.getElementById('user-search').value.trim();
   const qs=`page=${page}&search=${encodeURIComponent(_userSearch)}`;
   try{
-    const d=await(await fetch('/adminpanel/royalisbest/api/users?'+qs)).json();
+    const d=await(await apiFetch('/api/users?'+qs));
     document.getElementById('user-total').textContent=d.total.toLocaleString()+' users total';
     document.getElementById('user-cnt').textContent=d.total.toLocaleString();
     document.getElementById('users-tb').innerHTML=d.users.length
@@ -1457,18 +1504,18 @@ async function loadUsers(page=1){
     pages.innerHTML=html;
   }catch(e){}
 }
-function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function pct(a,b){return b>0?Math.round(a/b*100):0}
 function copyId(id){navigator.clipboard.writeText(String(id)).then(()=>toast('📋 ID copied: '+id,'ok'))}
 async function doBanUserId(uid,name){
   if(!confirm('Ban '+name+' ('+uid+')?'))return;
-  const r=await fetch('/adminpanel/royalisbest/api/ban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
+  const r=await apiFetch('/api/ban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
   const j=await r.json();
   if(j.ok){toast('🚫 '+name+' banned','ok');loadUsers(_userPage);}
   else toast('❌ Failed','err');
 }
 async function doUnbanUser(uid,name){
   if(!confirm('Unban '+name+' ('+uid+')?'))return;
-  const r=await fetch('/adminpanel/royalisbest/api/unban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
+  const r=await apiFetch('/api/unban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
   if((await r.json()).ok){toast('✅ '+name+' unbanned','ok');loadUsers(_userPage);}
   else toast('❌ Failed','err');
 }
@@ -1476,87 +1523,181 @@ async function doBanUser(){
   const uid=document.getElementById('ban-id').value.trim();
   if(!uid){toast('❌ Enter a user ID','err');return;}
   if(!confirm('Ban user ID '+uid+'?'))return;
-  const r=await fetch('/adminpanel/royalisbest/api/ban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:parseInt(uid)})});
+  const r=await apiFetch('/api/ban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:parseInt(uid)})});
   if((await r.json()).ok){toast('🚫 User '+uid+' banned','ok');document.getElementById('ban-id').value='';loadUsers(_userPage);}
   else toast('❌ Failed','err');
 }
-function exportUsersCSV(){window.open('/adminpanel/royalisbest/api/users/export','_blank')}
+function exportUsersCSV(){window.open(API_BASE+'/api/users/export','_blank')}
 
 // ── Premium ──────────────────────────────────────────────────
-function filterPremiumUsers(){
-  const q=document.getElementById('prem-search').value.toLowerCase();
-  const tier=document.getElementById('prem-filter').value;
-  document.querySelectorAll('#premium-tb tr').forEach(tr=>{
-    const text=tr.textContent.toLowerCase();
-    const matchQ=!q||text.includes(q);
-    const matchT=!tier||text.includes(tier);
-    tr.style.display=matchQ&&matchT?'':'none';
-  });
-}
 function openGrantPremiumModal(){document.getElementById('grant-modal').classList.add('open')}
 function closeGrantPremiumModal(){document.getElementById('grant-modal').classList.remove('open')}
-function editPremium(uid){toast('✏️ Opening editor for '+uid,'ok')}
-function revokePremium(uid,uname){
-  if(!confirm('Revoke premium for @'+uname+'?'))return;
-  toast('🚫 Premium revoked for @'+uname,'ok');
+
+// Extend/Renew modal
+function openExtendPremiumModal(uid){
+  document.getElementById('extend-uid').value = uid;
+  document.getElementById('extend-days').value = 30;
+  document.getElementById('extend-modal').classList.add('open');
 }
-function exportPremiumCSV(){toast('⬇️ Exporting premium users…','ok')}
+function closeExtendPremiumModal(){document.getElementById('extend-modal').classList.remove('open')}
+
+async function doExtendPremium(){
+  const uid  = document.getElementById('extend-uid').value.trim();
+  const days = parseInt(document.getElementById('extend-days').value)||30;
+  if(!uid){toast('❌ Missing user ID','err');return;}
+  try{
+    const r = await apiFetch('/api/extend_premium',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({user_id:uid,days})
+    });
+    const d = d2;
+    if(d.ok){
+      toast(`✅ Premium extended! New expiry: ${d.new_expires_at}`,'ok');
+      closeExtendPremiumModal();
+      setTimeout(loadPremiumStats, 500);
+    } else {
+      toast('❌ '+(d.error||'Failed'),'err');
+    }
+  }catch(e){toast('❌ Request failed','err');}
+}
+
+async function revokePremium(uid){
+  if(!confirm(`Revoke premium for user ${uid}?`))return;
+  try{
+    const r = await apiFetch('/api/revoke_premium',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({user_id:uid})
+    });
+    const d = d2;
+    if(d.ok){
+      toast(`🚫 Premium revoked for ${uid}`,'ok');
+      setTimeout(loadPremiumStats, 500);
+    } else {
+      toast('❌ '+(d.error||'Failed'),'err');
+    }
+  }catch(e){toast('❌ Request failed','err');}
+}
+
+function exportPremiumCSV(){
+  if(!_premiumData||!_premiumData.length){toast('No data to export','err');return;}
+  const hdr = 'user_id,expires_at,granted_at,status\n';
+  const rows = _premiumData.map(u=>`${u.user_id},${u.expires_at},${u.granted_at},${u.status}`).join('\n');
+  const blob = new Blob([hdr+rows],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='premium_users.csv';a.click();
+  toast('⬇️ CSV downloaded','ok');
+}
+
 async function doGrantPremium(){
-  const uid=document.getElementById('grant-uid').value.trim();
-  const tier=document.getElementById('grant-tier').value;
-  const expiry=document.getElementById('grant-expiry').value;
+  const uid    = document.getElementById('grant-uid').value.trim();
+  const expiry = document.getElementById('grant-expiry').value;
   if(!uid){toast('❌ Enter a user ID','err');return;}
-  toast('⭐ Granting '+tier+' to '+uid+'…','ok');
-  closeGrantPremiumModal();
+  // Calculate days from expiry date
+  let days = 30;
+  if(expiry){
+    const diff = Math.round((new Date(expiry)-new Date())/(1000*60*60*24));
+    if(diff>0) days=diff;
+  }
+  try{
+    const r = await apiFetch('/api/grant_premium',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({user_id:uid,days})
+    });
+    const d = d2;
+    if(d.ok){
+      toast(`⭐ Premium granted! Expires: ${d.expires_at}`,'ok');
+      closeGrantPremiumModal();
+      setTimeout(loadPremiumStats, 500);
+    } else {
+      toast('❌ '+(d.error||'Failed'),'err');
+    }
+  }catch(e){toast('❌ Request failed','err');}
 }
 
 // ── Bot Users API tab ─────────────────────────────────────────
 let _buData=[];
-function fetchBotUsers(){
-  const token=document.getElementById('bu-token').value.trim();
-  if(!token){toast('❌ Enter a bot token','err');return;}
-  toast('⚡ Fetching users from bot…','ok');
-  // Simulated result
-  setTimeout(()=>{
+async function fetchBotUsers(){
+  toast('⚡ Loading users…','ok');
+  try{
+    const stats = await apiFetch('/api/bot_stats');
+    const d = stats;
     document.getElementById('bu-result-card').style.display='block';
     document.getElementById('bu-table-card').style.display='block';
-    document.getElementById('bu-total').textContent='1,240';
-    document.getElementById('bu-banned').textContent='18';
-    document.getElementById('bu-result-cnt').textContent='1,240';
-    document.getElementById('bu-shown').textContent='1,240';
-    document.getElementById('bu-tb').innerHTML=`
-      <tr><td class="mono" style="padding:10px 14px;color:var(--muted)">1</td>
-      <td style="padding:10px 14px"><strong>Priya Sharma</strong></td>
-      <td class="mono" style="padding:10px 14px">589234710</td>
-      <td style="padding:10px 14px;color:var(--a3)">@priya_win</td>
-      <td class="mono" style="padding:10px 14px">48</td>
-      <td class="mono" style="padding:10px 14px;font-size:11px;color:var(--muted)">2026-04-10</td>
-      <td><span class="badge bg"><span class="dot dg"></span>Active</span></td>
-      <td style="display:flex;gap:5px"><button class="btn btn-ghost btn-xs" onclick="toast('📋 Copied','ok')">📋</button><button class="btn btn-danger btn-xs">🚫</button></td></tr>
-      <tr><td class="mono" style="padding:10px 14px;color:var(--muted)">2</td>
-      <td style="padding:10px 14px"><strong>Amit Kumar</strong></td>
-      <td class="mono" style="padding:10px 14px">391827465</td>
-      <td style="padding:10px 14px;color:var(--a3)">@amit_rox</td>
-      <td class="mono" style="padding:10px 14px">31</td>
-      <td class="mono" style="padding:10px 14px;font-size:11px;color:var(--muted)">2026-04-12</td>
-      <td><span class="badge bg"><span class="dot dg"></span>Active</span></td>
-      <td style="display:flex;gap:5px"><button class="btn btn-ghost btn-xs" onclick="toast('📋 Copied','ok')">📋</button><button class="btn btn-danger btn-xs">🚫</button></td></tr>`;
-    toast('✅ Fetched 1,240 users successfully','ok');
-  },1200);
+    const total   = d.total_users||0;
+    const banned  = d.banned_users||0;
+    document.getElementById('bu-total').textContent      = total.toLocaleString();
+    document.getElementById('bu-banned').textContent     = banned.toLocaleString();
+    document.getElementById('bu-result-cnt').textContent = total.toLocaleString();
+    document.getElementById('bu-shown').textContent      = total.toLocaleString();
+    // Load actual user list
+    const ud = await apiFetch('/api/users?page=1');
+    _buData = ud.users||[];
+    renderBuTable(_buData);
+    toast(`✅ Loaded ${total.toLocaleString()} users`,'ok');
+  }catch(e){toast('❌ Failed to load users','err');console.error(e);}
+}
+
+function renderBuTable(users){
+  document.getElementById('bu-tb').innerHTML = users.map((u,i)=>{
+    const name = escHtml(((u.first_name||'')+(u.last_name?' '+u.last_name:'')).trim()||'Unknown');
+    const uname = u.username?`@${escHtml(u.username)}`:'—';
+    return`<tr>
+      <td class="mono" style="padding:10px 14px;color:var(--muted)">${i+1}</td>
+      <td style="padding:10px 14px"><strong>${name}</strong></td>
+      <td class="mono" style="padding:10px 14px">${u.user_id}</td>
+      <td style="padding:10px 14px;color:var(--a3)">${uname}</td>
+      <td class="mono" style="padding:10px 14px;font-size:11px;color:var(--muted)">${u.joined_at||'—'}</td>
+      <td>${u.is_banned
+        ?`<span class="badge br"><span class="dot dr"></span>Banned</span>`
+        :`<span class="badge bg"><span class="dot dg"></span>Active</span>`}</td>
+      <td style="display:flex;gap:5px">
+        <button class="btn btn-ghost btn-xs" onclick="navigator.clipboard.writeText('${u.user_id}');toast('📋 Copied','ok')">📋</button>
+        ${u.is_banned
+          ?`<button class="btn btn-success btn-xs" onclick="quickUnbanUser(${u.user_id})">✅ Unban</button>`
+          :`<button class="btn btn-danger btn-xs" onclick="quickBanUser(${u.user_id})">🚫 Ban</button>`}
+      </td></tr>`;
+  }).join('') || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--muted)">No users found</td></tr>';
+}
+
+async function quickBanUser(uid){
+  if(!confirm('Ban user '+uid+'?'))return;
+  const r=await apiFetch('/api/ban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
+  const d=await r.json();
+  if(d.ok){toast('🚫 User banned','ok');fetchBotUsers();}else toast('❌ Failed','err');
+}
+async function quickUnbanUser(uid){
+  const r=await apiFetch('/api/unban_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
+  const d=await r.json();
+  if(d.ok){toast('✅ User unbanned','ok');fetchBotUsers();}else toast('❌ Failed','err');
 }
 function clearBotUsers(){
-  document.getElementById('bu-token').value='';
   document.getElementById('bu-result-card').style.display='none';
   document.getElementById('bu-table-card').style.display='none';
+  _buData=[];
   toast('Cleared','ok');
 }
 function filterBotUsers(){
-  const q=document.getElementById('bu-search').value.toLowerCase();
-  document.querySelectorAll('#bu-tb tr').forEach(tr=>{
-    tr.style.display=!q||tr.textContent.toLowerCase().includes(q)?'':'none';
-  });
+  const q=(document.getElementById('bu-search').value||'').toLowerCase();
+  const filtered = q ? _buData.filter(u=>
+    String(u.user_id).includes(q) ||
+    (u.first_name||'').toLowerCase().includes(q) ||
+    (u.username||'').toLowerCase().includes(q)
+  ) : _buData;
+  renderBuTable(filtered);
+  document.getElementById('bu-shown').textContent = filtered.length.toLocaleString();
 }
-function exportBotUsersCSV(){toast('⬇️ Exporting CSV…','ok')}
+function exportBotUsersCSV(){
+  if(!_buData||!_buData.length){toast('No data to export','err');return;}
+  const hdr='user_id,first_name,last_name,username,joined_at,is_banned\n';
+  const rows=_buData.map(u=>
+    `${u.user_id},${u.first_name||''},${u.last_name||''},${u.username||''},${u.joined_at||''},${u.is_banned?'yes':'no'}`
+  ).join('\n');
+  const blob=new Blob([hdr+rows],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='bot_users.csv';a.click();
+  toast('⬇️ CSV downloaded','ok');
+}
+
 function copyBotUsersJSON(){navigator.clipboard.writeText('[]').then(()=>toast('📋 JSON copied','ok'))}
 function fetchWithToken(name){toast('⚡ Fetching '+name+' users…','ok')}
 
@@ -1569,7 +1710,7 @@ async function doBroadcast(){
   if(!msg){toast('❌ Write a message first','err');return;}
   const target=document.getElementById('bc-target').value;
   toast('📢 Broadcasting to '+target+' users…','ok');
-  try{await fetch('/adminpanel/royalisbest/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,parse_mode:'HTML',target})});}catch(e){}
+  try{await apiFetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,parse_mode:'HTML',target})});}catch(e){}
 }
 const templates={
   welcome:'👋 <b>Welcome to RoyalityBots!</b>\n\nYou can now participate in giveaways and referral contests. Type /help to get started.',
@@ -1642,27 +1783,31 @@ setInterval(loadStats,30000);
 pollLiveUsers();
 setInterval(pollLiveUsers,10000);
 
-// Live log auto-append (demo)
-const logEvents=[
-  {color:'var(--green)',msg:'✅ New user joined @RoyalReferBot'},
-  {color:'var(--accent)',msg:'🗳 New vote on Giveaway #284'},
-  {color:'var(--cyan)',msg:'📢 Broadcast queued for 2,132 users'},
-  {color:'var(--gold)',msg:'⭐ User upgraded to Pro plan'},
-  {color:'var(--red)',msg:'🚫 Suspicious activity flagged for review'},
-];
-setInterval(()=>{
+// ── Live Activity Log (real data from DB) ──────────────────
+async function loadActivityLog(){
   const stream=document.getElementById('log-stream');
   if(!stream)return;
-  const ev=logEvents[Math.floor(Math.random()*logEvents.length)];
-  const now=new Date().toISOString().replace('T',' ').slice(0,19);
-  const entry=document.createElement('div');
-  entry.className='log-entry';
-  entry.style.opacity='0';entry.style.transition='opacity .4s';
-  entry.innerHTML=`<div class="log-dot" style="background:${ev.color}"></div><div><div class="log-msg">${ev.msg}</div><div class="log-time">${now}</div></div>`;
-  stream.prepend(entry);
-  requestAnimationFrame(()=>entry.style.opacity='1');
-  if(stream.children.length>30) stream.lastChild.remove();
-},5000);
+  try{
+    const d=await apiFetch('/api/activity_log');
+    const logs=d.logs||[];
+    if(logs.length===0){
+      stream.innerHTML='<div style="text-align:center;padding:24px;color:var(--muted)">No recent activity</div>';
+      return;
+    }
+    stream.innerHTML=logs.map(l=>`
+      <div class="log-entry">
+        <div class="log-dot" style="background:${l.color||'var(--accent)'}"></div>
+        <div>
+          <div class="log-msg">${escHtml(l.msg||'')}</div>
+          <div class="log-time">${l.time||''}</div>
+        </div>
+      </div>`).join('');
+  }catch(e){
+    stream.innerHTML='<div style="text-align:center;padding:24px;color:var(--muted)">Could not load activity</div>';
+  }
+}
+loadActivityLog();
+setInterval(loadActivityLog, 30000);
 </script>
 </body>
 </html>
