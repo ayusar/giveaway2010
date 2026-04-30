@@ -543,8 +543,8 @@ select.inp{cursor:pointer}
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Title</th><th>Created</th><th>Ended</th><th>Votes</th><th>Archived</th><th>Panel Link</th><th>Actions</th></tr></thead>
-            <tbody id="og-tb"><tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">Loading…</td></tr></tbody>
+            <thead><tr><th>ID</th><th>Title</th><th>Created</th><th>Ended</th><th>Votes</th><th>Channel</th><th>Members</th><th>Winner</th><th>Actions</th></tr></thead>
+            <tbody id="og-tb"><tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1259,8 +1259,8 @@ async function loadClones(){
       return`<tr>
         <td><strong>@${escHtml(c.bot_username||'—')}</strong></td>
         <td>${c.owner_id}</td>
-        <td class="mono">${(c.total_users||0).toLocaleString()}</td>
-        <td class="mono" style="font-size:11px">${escHtml(c.channel_id||'—')}</td>
+        <td class="mono">${(c.user_count||0).toLocaleString()}</td>
+        <td class="mono" style="font-size:11px">${escHtml(c.channel||'—')}</td>
         <td><span class="badge ${banned?'br':'bg'}"><span class="dot ${banned?'dr':'dg'}"></span>${banned?'Banned':'Active'}</span></td>
         <td class="mono" style="font-size:11px">${c.created_at||'—'}</td>
         <td style="display:flex;gap:5px;flex-wrap:wrap">
@@ -1278,7 +1278,7 @@ async function loadClones(){
       <div style="display:flex;align-items:center;gap:10px;padding:9px 18px;border-bottom:1px solid rgba(26,26,56,.5)">
         <span style="font-size:11px;color:var(--muted);width:18px;text-align:center;font-family:'JetBrains Mono',monospace">${i+1}</span>
         <div style="flex:1"><div style="font-size:12px;font-weight:600">@${escHtml(c.bot_username||'—')}</div>
-        <div style="font-size:10px;color:var(--muted)">${(c.total_users||0).toLocaleString()} users</div></div>
+        <div style="font-size:10px;color:var(--muted)">${(c.user_count||0).toLocaleString()} users</div></div>
         <span class="badge ${c.is_banned?'br':'bg'}" style="font-size:9px">${c.is_banned?'Banned':'Live'}</span>
       </div>`).join('')||'<div style="padding:0 18px 12px;color:var(--muted);font-size:12px">No data</div>';
   }catch(e){}
@@ -1294,7 +1294,7 @@ async function openCuModal(username,token){
   document.getElementById('cu-tb').innerHTML='';
   document.getElementById('cu-count').textContent='—';
   try{
-    const d=await(await apiFetch('/api/clone_users?token='+encodeURIComponent(token)+'&username='+encodeURIComponent(username)));
+    const d=await apiFetch('/api/clone_users?token='+encodeURIComponent(token)+'&username='+encodeURIComponent(username));
     _cuData=d.users||[];
     renderCuUsers(_cuData);
     document.getElementById('cu-subtitle').textContent='@'+username+' · '+_cuData.length+' users';
@@ -1334,21 +1334,21 @@ async function loadGiveaways(){
       <td class="mono">${g.giveaway_id}</td>
       <td><strong>${escHtml(g.title||'Untitled')}</strong></td>
       <td class="mono" style="font-size:11px">${escHtml(g.channel_id||'—')}</td>
-      <td class="mono">${g.vote_count||0}</td>
-      <td><span class="badge ${g.is_closed?'bm':'bg'}"><span class="dot ${g.is_closed?'dm':'dg'}"></span>${g.is_closed?'Closed':'Live'}</span></td>
+      <td class="mono">${g.total_votes||0}</td>
+      <td><span class="badge ${!g.is_active?'bm':'bg'}"><span class="dot ${!g.is_active?'dm':'dg'}"></span>${!g.is_active?'Closed':'Live'}</span></td>
       <td class="mono" style="font-size:11px">${g.created_at||'—'}</td>
       <td style="display:flex;gap:5px">
         <button class="btn btn-ghost btn-xs" onclick="openParticipants('${g.giveaway_id}')">👥 Voters</button>
-        ${!g.is_closed?`<button class="btn btn-danger btn-xs" onclick="closeGiveaway('${g.giveaway_id}')">⏹ End</button>`:''}
+        ${g.is_active?`<button class="btn btn-danger btn-xs" onclick="closeGiveaway('${g.giveaway_id}')">⏹ End</button>`:''}
       </td>
     </tr>`).join('')||'<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">No giveaways</td></tr>';
     // Recent giveaways widget
     document.getElementById('recent-ga').innerHTML=d.giveaways.slice(0,5).map(g=>`
       <div style="display:flex;align-items:center;gap:10px;padding:9px 18px;border-bottom:1px solid rgba(26,26,56,.5)">
-        <span class="dot ${g.is_closed?'dm':'dg'}" style="width:7px;height:7px;flex-shrink:0"></span>
+        <span class="dot ${!g.is_active?'dm':'dg'}" style="width:7px;height:7px;flex-shrink:0"></span>
         <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(g.title||'Untitled')}</div>
-        <div style="font-size:10px;color:var(--muted)">${g.vote_count||0} votes</div></div>
-        <span style="font-size:10px;color:var(--muted);flex-shrink:0">${g.is_closed?'Closed':'Live'}</span>
+        <div style="font-size:10px;color:var(--muted)">${g.total_votes||0} votes</div></div>
+        <span style="font-size:10px;color:var(--muted);flex-shrink:0">${!g.is_active?'Closed':'Live'}</span>
       </div>`).join('')||'<div style="padding:0 18px 12px;color:var(--muted);font-size:12px">No giveaways</div>';
   }catch(e){}
 }
@@ -1362,7 +1362,7 @@ async function openParticipants(gid){
   document.getElementById('part-empty').style.display='none';
   document.getElementById('part-tb').innerHTML='';
   try{
-    const d=await(await apiFetch('/api/giveaway_participants?giveaway_id='+gid));
+    const d=await apiFetch('/api/giveaway_participants?giveaway_id='+gid);
     _partData=d.participants||[];
     renderParts(_partData);
     document.getElementById('part-subtitle').textContent='#'+gid+' · '+_partData.length+' participants';
@@ -1393,7 +1393,7 @@ async function loadPanels(){
     document.getElementById('panels-tb').innerHTML=d.panels.map(p=>`<tr>
       <td class="mono" style="user-select:all;font-size:11px">${p.token}</td>
       <td>${p.panel_type||'—'}</td>
-      <td class="mono">${p.channel_id||'—'}</td>
+      <td class="mono">${escHtml(p.channel_title||p.channel_username||'—')}</td>
       <td class="mono" style="font-size:11px">${p.created_at||'—'}</td>
       <td><a href="/panel/${p.token}" target="_blank" style="color:var(--a3);font-size:11px">🔗 Open</a></td>
       <td><button class="btn btn-danger btn-xs" onclick="deletePanel('${p.token}')">🗑</button></td>
@@ -1420,13 +1420,20 @@ function renderOG(arr){
   document.getElementById('og-tb').innerHTML=arr.map(g=>`<tr>
     <td class="mono">${g.giveaway_id}</td>
     <td><strong>${escHtml(g.title||'Untitled')}</strong></td>
-    <td class="mono" style="font-size:11px">${g.created_at||'—'}</td>
-    <td class="mono" style="font-size:11px">${g.ended_at||'—'}</td>
-    <td class="mono">${g.vote_count||0}</td>
-    <td><span class="badge ${g.archived?'bg':'bm'}">${g.archived?'Yes':'No'}</span></td>
-    <td>${g.panel_token?`<a href="/panel/${g.panel_token}" target="_blank" style="color:var(--a3);font-size:11px">🔗 Panel</a>`:'—'}</td>
-    <td><button class="btn btn-ghost btn-xs" onclick="openParticipants('${g.giveaway_id}')">👥</button></td>
-  </tr>`).join('')||'<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">No archived giveaways</td></tr>';
+    <td class="mono" style="font-size:11px">${(g.created_at||'—').slice(0,10)}</td>
+    <td class="mono" style="font-size:11px">${(g.end_date||g.ended_at||'—').slice(0,10)}</td>
+    <td class="mono">${g.total_votes||0}</td>
+    <td class="mono" style="font-size:11px">${escHtml(g.channel||'—')}</td>
+    <td class="mono" style="font-size:11px">${g.member_start||0}→${g.member_final||0} <span style="color:var(--green)">(+${g.member_gained||0})</span></td>
+    <td style="color:var(--yellow);font-size:11px;font-weight:600">${escHtml(g.winner||'—')}</td>
+    <td style="display:flex;gap:4px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-xs" onclick="openParticipants('${g.giveaway_id}')">👥</button>
+      ${g.file_id
+        ?`<button class="btn btn-primary btn-xs" onclick="downloadGiveaway('${g.giveaway_id}','${escHtml(g.title||g.giveaway_id)}')">⬇️ Download</button>`
+        :`<span style="font-size:10px;color:var(--muted)">No file</span>`}
+      ${g.panel_token?`<a href="/panel/${g.panel_token}" target="_blank" class="btn btn-ghost btn-xs">🔗 Panel</a>`:''}
+    </td>
+  </tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">No archived giveaways</td></tr>';
 }
 function filterOldGiveaways(){
   const q=document.getElementById('og-search').value.toLowerCase();
@@ -1451,10 +1458,50 @@ async function unbanClone(token,uname){
   await apiFetch('/api/unban_clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
   toast('✅ Bot @'+uname+' unbanned','ok');loadClones();
 }
+async function downloadGiveaway(gid, title){
+  toast('⬇️ Fetching from Telegram…','ok');
+  try{
+    const res = await fetch(API_BASE+'/api/download_giveaway?giveaway_id='+encodeURIComponent(gid), {
+      credentials:'same-origin'
+    });
+    if(!res.ok){
+      const err = await res.json().catch(()=>({detail:'Unknown error'}));
+      toast('❌ '+(err.detail||'Download failed'),'err');
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `giveaway_${gid}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('✅ Downloaded giveaway_'+gid+'.json','ok');
+  }catch(e){
+    toast('❌ Download failed: '+e.message,'err');
+    console.error('downloadGiveaway error:',e);
+  }
+}
+
 async function closeGiveaway(gid){
-  if(!confirm('Close giveaway #'+gid+'?'))return;
-  await apiFetch('/api/close_giveaway',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({giveaway_id:gid})});
-  toast('⏹ Giveaway closed','ok');loadGiveaways();
+  if(!confirm('Close giveaway #'+gid+'? This will archive it with full stats and send the file to your DATABASE_CHANNEL.'))return;
+  const btn = event.target;
+  if(btn){btn.disabled=true;btn.textContent='⏳ Closing…';}
+  try{
+    const d = await apiFetch('/api/close_giveaway',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({giveaway_id:gid})
+    });
+    if(d.ok){
+      toast(d.archiving?'⏹ Closed — archiving in background…':'⏹ Giveaway closed','ok');
+      setTimeout(()=>{loadGiveaways();setTimeout(loadOldGiveaways,3000);},1000);
+    } else {
+      toast('❌ '+(d.error||'Failed to close'),'err');
+      if(btn){btn.disabled=false;btn.textContent='⏹ End';}
+    }
+  }catch(e){
+    toast('❌ Error: '+e.message,'err');
+    if(btn){btn.disabled=false;btn.textContent='⏹ End';}
+  }
 }
 
 // ── Users ────────────────────────────────────────────────────
@@ -1466,7 +1513,7 @@ async function loadUsers(page=1){
   _userSearch=document.getElementById('user-search').value.trim();
   const qs=`page=${page}&search=${encodeURIComponent(_userSearch)}`;
   try{
-    const d=await(await apiFetch('/api/users?'+qs));
+    const d=await apiFetch('/api/users?'+qs);
     document.getElementById('user-total').textContent=d.total.toLocaleString()+' users total';
     document.getElementById('user-cnt').textContent=d.total.toLocaleString();
     document.getElementById('users-tb').innerHTML=d.users.length
