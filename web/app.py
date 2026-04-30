@@ -101,6 +101,9 @@ _start_time = time.time()
 PANEL_SECRET = "royalisbest"
 PANEL_PARAM  = "b3c"
 
+# ── Module-level settings import ──────────────────────────────
+from config.settings import settings as settings
+
 # ── Rate limiting: {ip: [timestamp, ...]} ─────────────────────
 _rate_store: dict = {}
 _RATE_LIMIT  = 60   # max requests
@@ -138,8 +141,9 @@ import hmac as _hmac, hashlib as _hashlib
 
 def _sign_token(raw: str) -> str:
     """Return raw + '.' + HMAC signature."""
+    _key = getattr(settings, "SECRET_KEY", None) or "fallback-secret-key-change-me"
     sig = _hmac.new(
-        settings.SECRET_KEY.encode(),
+        _key.encode(),
         raw.encode(),
         _hashlib.sha256
     ).hexdigest()[:16]
@@ -154,14 +158,14 @@ def _verify_token(token: str) -> bool:
         if len(parts) != 2:
             return False
         raw, sig = parts
+        _key = getattr(settings, "SECRET_KEY", None) or "fallback-secret-key-change-me"
         expected = _hmac.new(
-            settings.SECRET_KEY.encode(),
+            _key.encode(),
             raw.encode(),
             _hashlib.sha256
         ).hexdigest()[:16]
         if not _hmac.compare_digest(sig, expected):
             return False
-        # raw = "admin:<expiry_timestamp>"
         _, expiry_str = raw.split(":", 1)
         return float(expiry_str) > time.time()
     except Exception:
