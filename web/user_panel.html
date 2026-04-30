@@ -488,7 +488,7 @@ init();
 // ── Auto-refresh stats every 2 minutes ─────────────────────
 async function refreshPanelData(){
   try{
-    const r = await fetch('/panel/' + TOKEN + '/api/data', {headers:{'Referer': window.location.href}});
+    const r = await fetch('/panel/' + TOKEN + '/api/data', {credentials: 'same-origin'});
     if(!r.ok) return;
     const d = await r.json();
     if(d.archived) return;
