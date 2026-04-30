@@ -1,21 +1,8 @@
 """
 utils/channel_admin_check.py
 
-Utility to verify that a Telegram user is an admin (or owner) of a channel
-before letting them create a giveaway poll or referral bot for that channel.
-
-Usage:
-    ok, err_msg = await verify_channel_admin(bot, user_id, channel_identifier)
-    if not ok:
-        await message.answer(err_msg, parse_mode="HTML")
-        return
-
-FIX NOTE:
-    The original code used bot.get_chat_member(chat_id, user_id) to check admin
-    status. This ALWAYS FAILS for Telegram broadcast channels — the Bot API raises
-    USER_NOT_PARTICIPANT for any user who is not an admin, because regular channel
-    members are invisible to bots. The fix uses get_chat_administrators() instead,
-    which returns the full admin list that we can search through.
+IMPORTANT: Never call bot.get_chat() — it crashes on channels with paid reactions
+in aiogram 3.7.0. Use get_chat_administrators() only, which is safe.
 """
 import logging
 from aiogram import Bot
@@ -23,7 +10,6 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 logger = logging.getLogger(__name__)
 
-# Statuses that count as "admin" in Telegram
 _ADMIN_STATUSES = {"creator", "administrator"}
 
 
@@ -31,105 +17,60 @@ async def verify_channel_admin(
     bot: Bot,
     user_id: int,
     channel: str,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str, str]:
     """
-    Check that `user_id` is an admin or owner of `channel`.
-
-    Returns:
-        (True, "")           — user is verified admin
-        (False, error_text)  — not an admin, error_text has the rejection message
+    Returns: (ok, error_msg, chat_id, chat_title)
+    - ok=True  → user is verified admin, chat_id and chat_title are populated
+    - ok=False → error_msg explains why, chat_id and chat_title are empty
     """
-    # ── 1. Resolve the chat object ──────────────────────────
+    # ── Fetch admin list — safe, does not deserialize reactions ──
     try:
-        chat = await bot.get_chat(channel)
-        chat_id = chat.id
-        chat_title = chat.title or channel
+        admins = await bot.get_chat_administrators(channel)
     except TelegramForbiddenError:
         return False, (
-            "❌ <b>Bot not in channel</b>\n\n"
-            f"The bot hasn't been added to <code>{channel}</code> yet.\n\n"
-            "Please:\n"
-            "1. Add this bot as an <b>Admin</b> to your channel\n"
-            "2. Then try again with /creategiveaway"
-        )
+            "❌ Bot is not an admin in this channel.\n\n"
+            "Please add this bot as Admin to your channel first, then try again."
+        ), "", ""
     except TelegramBadRequest as e:
         if "chat not found" in str(e).lower():
-            return False, (
-                f"❌ <b>Channel not found:</b> <code>{channel}</code>\n\n"
-                "Make sure the username is correct (e.g. <code>@mychannel</code>)"
-            )
-        return False, f"❌ Could not access channel <code>{channel}</code>: <code>{e}</code>"
+            return False, f"❌ Channel not found: {channel}\n\nCheck the username and try again.", "", ""
+        return False, f"❌ Could not access channel {channel}\n\nError: {str(e)}", "", ""
     except Exception as e:
-        return False, f"❌ Error looking up channel: <code>{e}</code>"
+        logger.warning(f"verify_channel_admin: get_chat_administrators failed: {e}")
+        return False, f"❌ Error checking channel: {str(e)}", "", ""
 
-    # ── 2. Must be a channel or supergroup ─────────────────
-    if chat.type not in ("channel", "supergroup"):
-        return False, (
-            "❌ <b>Not a channel or supergroup.</b>\n\n"
-            f"<code>{channel}</code> is a <b>{chat.type}</b>.\n"
-            "Please enter a public channel (e.g. <code>@mychannel</code>)."
-        )
+    # Get chat_id and chat_title from the admin list chat info
+    # admins[0].chat is not available, but we can use the channel identifier
+    # and get title from the first admin's info — actually use raw API via bot
+    chat_id = channel
+    chat_title = channel
 
-    # ── 3. Fetch the admin list and search it ───────────────
-    #
-    # IMPORTANT: bot.get_chat_member(chat_id, user_id) is BROKEN for channels.
-    # Telegram's Bot API raises USER_NOT_PARTICIPANT for any user who messages
-    # the bot privately — even if they are a channel admin — because channel
-    # subscribers are invisible to bots. The only reliable way to check admin
-    # status is get_chat_administrators(), which returns all admins directly.
-    #
-    try:
-        admins = await bot.get_chat_administrators(chat_id)
-    except TelegramForbiddenError:
-        return False, (
-            "❌ <b>Bot lacks permission</b>\n\n"
-            f"The bot cannot read the admin list for <code>{chat_title}</code>.\n"
-            "Please make sure the bot is an <b>Admin</b> with at least "
-            "<i>Manage channel</i> permission."
-        )
-    except Exception as e:
-        logger.warning(f"verify_channel_admin: get_chat_administrators failed for {channel}: {e}")
-        return False, (
-            f"❌ Could not fetch admin list for <code>{chat_title}</code>.\n\n"
-            f"Error: <code>{e}</code>"
-        )
+    # Try getting just the chat id/title via a raw Telegram API call
+    # that doesn't fail on paid reactions: sendChatAction is lightweight
+    # Actually the safest way: parse from get_chat_administrators response
+    # The ChatMemberOwner has no chat attr, but we already have channel string.
+    # Use channel as chat_id (works for @username and numeric id both).
 
-    # Search the admin list for the user
+    # ── Check user is admin ──────────────────────────────────
     user_entry = next((m for m in admins if m.user.id == user_id), None)
-
     if user_entry is None or user_entry.status not in _ADMIN_STATUSES:
-        status_str = user_entry.status if user_entry else "not in admin list"
         return False, (
-            f"🚫 <b>Access Denied</b>\n\n"
-            f"You are <b>not an admin</b> of <b>{chat_title}</b>.\n\n"
-            f"Your status: <code>{status_str}</code>\n\n"
-            "Only channel <b>owners</b> and <b>admins</b> can create giveaways "
-            "or referral bots for a channel.\n\n"
-            "👉 Ask the channel owner to make you an admin first."
-        )
+            "❌ You are not an admin of this channel.\n\n"
+            "Only owners and admins can create giveaways.\n"
+            "Ask the channel owner to make you an admin first."
+        ), "", ""
 
-    status = user_entry.status
-
-    # ── 4. Also verify the bot itself is admin ──────────────
-    # Reuse the already-fetched admin list — no extra API call needed.
+    # ── Check bot is admin ───────────────────────────────────
     try:
         me = await bot.get_me()
         bot_entry = next((m for m in admins if m.user.id == me.id), None)
         if bot_entry is None or bot_entry.status not in _ADMIN_STATUSES:
             return False, (
-                f"⚠️ <b>Bot is not an admin in {chat_title}</b>\n\n"
-                "The bot needs to be an <b>Admin</b> in your channel to post giveaways.\n\n"
-                "Please:\n"
-                "1. Go to your channel settings\n"
-                "2. Add this bot as an <b>Admin</b>\n"
-                "3. Then try again"
-            )
+                "❌ This bot is not an admin in your channel.\n\n"
+                "Please add this bot as Admin in channel settings, then try again."
+            ), "", ""
     except Exception as e:
-        logger.warning(f"verify_channel_admin: bot self-check failed for {channel}: {e}")
-        # Non-fatal — proceed even if we can't verify the bot's own status
+        logger.warning(f"verify_channel_admin: bot self-check failed: {e}")
 
-    logger.info(
-        f"verify_channel_admin: ✅ user={user_id} is {status} in "
-        f"chat_id={chat_id} title={chat_title!r}"
-    )
-    return True, ""
+    logger.info(f"verify_channel_admin: user={user_id} verified in {channel}")
+    return True, "", chat_id, chat_title
