@@ -181,6 +181,10 @@ async def _start_bot():
         set_domain(settings.WEB_DOMAIN)
         asyncio.create_task(keep_alive_loop())
 
+        from utils.premium_reminder import set_bot as set_prem_bot, premium_expiry_reminder_loop
+        set_prem_bot(bot)
+        asyncio.create_task(premium_expiry_reminder_loop())
+
         logger.info("🚀 Bot polling started!")
         await dp.start_polling(
             bot,
