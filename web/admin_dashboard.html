@@ -1227,9 +1227,10 @@ function renderCharts(d){
 // ── Clones ───────────────────────────────────────────────────
 async function loadClones(){
   try{
-    const d=await apiFetch('/api/clones');
-    document.getElementById('clone-cnt').textContent=d.clones.length;
-    document.getElementById('clones-tb').innerHTML=d.clones.map(c=>{
+    const raw=await apiFetch('/api/clones');
+    const d=Array.isArray(raw)?raw:(raw.clones||[]);
+    document.getElementById('clone-cnt').textContent=d.length;
+    document.getElementById('clones-tb').innerHTML=d.map(c=>{
       const banned=c.is_banned;
       return`<tr>
         <td><strong>@${escHtml(c.bot_username||'—')}</strong></td>
@@ -1248,7 +1249,7 @@ async function loadClones(){
       </tr>`;
     }).join('')||'<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">No bots found</td></tr>';
     // Top clones
-    const top=d.clones.slice(0,5);
+    const top=d.slice(0,5);
     document.getElementById('top-clones').innerHTML=top.map((c,i)=>`
       <div style="display:flex;align-items:center;gap:10px;padding:9px 18px;border-bottom:1px solid rgba(26,26,56,.5)">
         <span style="font-size:11px;color:var(--muted);width:18px;text-align:center;font-family:'JetBrains Mono',monospace">${i+1}</span>
@@ -1256,10 +1257,11 @@ async function loadClones(){
         <div style="font-size:10px;color:var(--muted)">${(c.user_count||0).toLocaleString()} users</div></div>
         <span class="badge ${c.is_banned?'br':'bg'}" style="font-size:9px">${c.is_banned?'Banned':'Live'}</span>
       </div>`).join('')||'<div style="padding:0 18px 12px;color:var(--muted);font-size:12px">No data</div>';
-  }catch(e){}
+  }catch(e){
+    document.getElementById('clones-tb').innerHTML='<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--red)">❌ Failed to load: '+e.message+'</td></tr>';
+    console.error('loadClones error',e);
+  }
 }
-
-// ── Bot clone modal ──────────────────────────────────────────
 let _cuData=[];
 async function openCuModal(username,token){
   document.getElementById('cu-modal').classList.add('open');
@@ -1303,9 +1305,10 @@ function closeCuModal(){document.getElementById('cu-modal').classList.remove('op
 // ── Giveaways ────────────────────────────────────────────────
 async function loadGiveaways(){
   try{
-    const d=await apiFetch('/api/giveaways');
-    document.getElementById('ga-cnt').textContent=d.giveaways.length;
-    document.getElementById('ga-tb').innerHTML=d.giveaways.map(g=>`<tr>
+    const raw=await apiFetch('/api/giveaways');
+    const d=Array.isArray(raw)?raw:(raw.giveaways||[]);
+    document.getElementById('ga-cnt').textContent=d.length;
+    document.getElementById('ga-tb').innerHTML=d.map(g=>`<tr>
       <td class="mono">${g.giveaway_id}</td>
       <td><strong>${escHtml(g.title||'Untitled')}</strong></td>
       <td class="mono" style="font-size:11px">${escHtml(g.channel_id||'—')}</td>
@@ -1318,14 +1321,17 @@ async function loadGiveaways(){
       </td>
     </tr>`).join('')||'<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">No giveaways</td></tr>';
     // Recent giveaways widget
-    document.getElementById('recent-ga').innerHTML=d.giveaways.slice(0,5).map(g=>`
+    document.getElementById('recent-ga').innerHTML=d.slice(0,5).map(g=>`
       <div style="display:flex;align-items:center;gap:10px;padding:9px 18px;border-bottom:1px solid rgba(26,26,56,.5)">
         <span class="dot ${!g.is_active?'dm':'dg'}" style="width:7px;height:7px;flex-shrink:0"></span>
         <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(g.title||'Untitled')}</div>
         <div style="font-size:10px;color:var(--muted)">${g.total_votes||0} votes</div></div>
         <span style="font-size:10px;color:var(--muted);flex-shrink:0">${!g.is_active?'Closed':'Live'}</span>
       </div>`).join('')||'<div style="padding:0 18px 12px;color:var(--muted);font-size:12px">No giveaways</div>';
-  }catch(e){}
+  }catch(e){
+    document.getElementById('ga-tb').innerHTML='<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--red)">❌ Failed to load: '+e.message+'</td></tr>';
+    console.error('loadGiveaways error',e);
+  }
 }
 
 // ── Participants modal ────────────────────────────────────────
@@ -1363,9 +1369,10 @@ function closeParticipants(){document.getElementById('part-modal').classList.rem
 // ── Panels ───────────────────────────────────────────────────
 async function loadPanels(){
   try{
-    const d=await apiFetch('/api/panels');
-    document.getElementById('panel-cnt').textContent=d.panels.length;
-    document.getElementById('panels-tb').innerHTML=d.panels.map(p=>`<tr>
+    const raw=await apiFetch('/api/panels');
+    const d=Array.isArray(raw)?raw:(raw.panels||[]);
+    document.getElementById('panel-cnt').textContent=d.length;
+    document.getElementById('panels-tb').innerHTML=d.map(p=>`<tr>
       <td class="mono" style="user-select:all;font-size:11px">${p.token}</td>
       <td>${p.panel_type||'—'}</td>
       <td class="mono">${escHtml(p.channel_title||p.channel_username||'—')}</td>
@@ -1373,7 +1380,10 @@ async function loadPanels(){
       <td><a href="/panel/${p.token}" target="_blank" style="color:var(--a3);font-size:11px">🔗 Open</a></td>
       <td><button class="btn btn-danger btn-xs" onclick="deletePanel('${p.token}')">🗑</button></td>
     </tr>`).join('')||'<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--muted)">No panels</td></tr>';
-  }catch(e){}
+  }catch(e){
+    document.getElementById('panels-tb').innerHTML='<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--red)">❌ Failed to load: '+e.message+'</td></tr>';
+    console.error('loadPanels error',e);
+  }
 }
 async function deletePanel(token){
   if(!confirm('Delete panel '+token+'?'))return;
@@ -1389,7 +1399,10 @@ async function loadOldGiveaways(){
     _ogData=d.giveaways||[];
     renderOG(_ogData);
     document.getElementById('og-cnt').textContent=_ogData.length;
-  }catch(e){}
+  }catch(e){
+    document.getElementById('og-tb').innerHTML='<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--red)">❌ Failed to load: '+e.message+'</td></tr>';
+    console.error('loadOldGiveaways error',e);
+  }
 }
 function renderOG(arr){
   document.getElementById('og-tb').innerHTML=arr.map(g=>`<tr>
