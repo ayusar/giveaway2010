@@ -72,6 +72,11 @@ async def _start_bot():
         set_domain(settings.WEB_DOMAIN)
         asyncio.create_task(keep_alive_loop())
 
+        # ── Premium expiry reminder loop ──────────────────────
+        from utils.premium_reminder import set_bot as set_prem_bot, premium_expiry_reminder_loop
+        set_prem_bot(bot)
+        asyncio.create_task(premium_expiry_reminder_loop())
+
         logger.info("🚀 Bot polling started!")
         await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
 
@@ -179,7 +184,7 @@ async def login_post(request: Request):
             tok = secrets.token_hex(32)
             _sessions[tok] = time.time() + 28800
             r = RedirectResponse(url=f"/adminpanel/{PANEL_SECRET}/a?{PANEL_PARAM}", status_code=302)
-            r.set_cookie("panel_session", tok, httponly=True, max_age=28800)
+            r.set_cookie("panel_session", tok, httponly=True, max_age=28800, path="/", samesite="lax")
             return r
         return HTMLResponse(_login_html("❌ Invalid username or password"))
     except Exception as e:
@@ -193,7 +198,7 @@ async def logout(request: Request):
     tok = _get_token(request)
     if tok and tok in _sessions: del _sessions[tok]
     r = RedirectResponse(url=f"/adminpanel/{PANEL_SECRET}/login", status_code=302)
-    r.delete_cookie("panel_session"); return r
+    r.delete_cookie("panel_session", path="/"); return r
 
 
 # ══════════════════════════════════════════════════════════════
@@ -497,8 +502,55 @@ async def user_panel(token: str, request: Request):
         if not giveaway_exists:
             # Serve page with loading screen — JS will fetch archived data
             return HTMLResponse(_archived_panel_html(panel), status_code=200)
-    data = await _build_panel_data(panel)
+    try:
+        data = await _build_panel_data(panel)
+    except Exception as e:
+        logger.error(f"_build_panel_data failed for token={token}: {e}", exc_info=True)
+        # Return safe fallback data so the page at least loads
+        data = {
+            "panel_type": panel.get("panel_type", "refer"),
+            "channel_title": panel.get("channel_title", ""),
+            "channel_username": panel.get("channel_username", ""),
+            "member_start": 0, "member_current": 0, "member_gain": 0,
+            "snap_labels": [], "snap_counts": [],
+            "votes_data": [], "prizes": [], "total_votes": 0,
+            "top_referrers": [], "refer_data": [], "total_refs": 0,
+            "created_at": "", "is_active": False, "title": "",
+        }
     return HTMLResponse(_user_panel_html(panel, data))
+
+
+def _user_panel_html(panel, data):
+    """Returns the user panel HTML with injected data. Guaranteed — never returns raw template."""
+    import json as _json, re as _re
+    panel_type = data.get("panel_type", panel.get("panel_type", "refer"))
+    token = panel.get("token", "")
+
+    with open(__file__.replace("app.py", "user_panel.html")) as f:
+        html = f.read()
+
+    # Serialize — default=str handles datetime/ObjectId/Decimal safely
+    try:
+        json_data = _json.dumps(data, ensure_ascii=False, default=str)
+    except Exception:
+        json_data = "{}"
+    # Escape </script> inside JSON so it doesn't break the <script> block
+    json_data = json_data.replace("</", "<\\/")
+
+    # Replace placeholder — use regex so whitespace variations don't matter
+    html = _re.sub(r"__PANEL_DATA__", json_data, html)
+    html = _re.sub(r"'__PANEL_TOKEN__'", _json.dumps(token), html)
+    html = _re.sub(r"__PANEL_TOKEN__", token, html)
+    html = _re.sub(r"__PANEL_TYPE__", panel_type, html)
+
+    # Final guarantee — if still present, the HTML template has unexpected content
+    if "__PANEL_DATA__" in html:
+        logger.error("__PANEL_DATA__ placeholder NOT replaced — injecting fallback")
+        html = html.replace("__PANEL_DATA__", json_data)
+    if "__PANEL_TOKEN__" in html:
+        html = html.replace("__PANEL_TOKEN__", token)
+
+    return html
 
 
 @app.get("/panel/{token}/api/data")
@@ -915,8 +967,16 @@ async def _build_panel_data(panel: dict) -> dict:
         refer_data = [{"name": u["user_name"], "refs": u.get("refer_count", 0),
                        "joined": str(u.get("joined_at",""))[:10]} for u in users[:50]]
 
-    # Channel growth snapshots
+    # Channel growth snapshots — field may be a JSON string (SQLite) or list (Mongo)
     snapshots = panel.get("member_snapshots", [])
+    if isinstance(snapshots, str):
+        try:
+            import json as _json2
+            snapshots = _json2.loads(snapshots) if snapshots else []
+        except Exception:
+            snapshots = []
+    if not isinstance(snapshots, list):
+        snapshots = []
     member_start = panel.get("member_start", 0)
     member_current = snapshots[-1]["c"] if snapshots else member_start
     member_gain = member_current - member_start
@@ -1114,6 +1174,237 @@ async def api_unban_user(request: Request):
             await conn.commit()
     return JSONResponse({"ok": True})
 
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/premium_users")
+async def api_premium_users(request: Request):
+    """List all premium users with status info."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    now = datetime.utcnow()
+    users = []
+    try:
+        if is_mongo():
+            docs = await get_db().premium_users.find({}).sort("granted_at", -1).to_list(None)
+            for d in docs:
+                exp = d.get("expires_at", "")
+                try:
+                    exp_dt = datetime.fromisoformat(str(exp).replace("Z",""))
+                    days_left = (exp_dt - now).days
+                    if days_left > 3:
+                        status = "active"
+                    elif days_left >= 0:
+                        status = "expiring"
+                    else:
+                        status = "expired"
+                except Exception:
+                    days_left = -1
+                    status = "expired"
+                users.append({
+                    "user_id": d.get("user_id"),
+                    "granted_by": d.get("granted_by", ""),
+                    "expires_at": str(exp)[:10],
+                    "granted_at": str(d.get("granted_at",""))[:10],
+                    "status": status,
+                    "days_left": days_left,
+                })
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                try:
+                    async with conn.execute("SELECT * FROM premium_users ORDER BY granted_at DESC") as cur:
+                        rows = await cur.fetchall()
+                except Exception:
+                    rows = []
+                for r in rows:
+                    d = dict(r)
+                    exp = d.get("expires_at","")
+                    try:
+                        exp_dt = datetime.fromisoformat(str(exp))
+                        days_left = (exp_dt - now).days
+                        if days_left > 3:
+                            status = "active"
+                        elif days_left >= 0:
+                            status = "expiring"
+                        else:
+                            status = "expired"
+                    except Exception:
+                        days_left = -1
+                        status = "expired"
+                    users.append({
+                        "user_id": d.get("user_id"),
+                        "granted_by": d.get("granted_by",""),
+                        "expires_at": str(exp)[:10],
+                        "granted_at": str(d.get("granted_at",""))[:10],
+                        "status": status,
+                        "days_left": days_left,
+                    })
+    except Exception as e:
+        logger.error(f"api_premium_users error: {e}")
+    return JSONResponse({"users": users, "total": len(users)})
+
+
+@app.post(f"/adminpanel/{PANEL_SECRET}/api/grant_premium")
+async def api_grant_premium(request: Request):
+    """Grant premium to a user (called from admin dashboard)."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    data = await request.json()
+    user_id = data.get("user_id")
+    days = int(data.get("days", 30))
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Missing user_id"})
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "Invalid user_id"})
+    from utils.premium import add_premium
+    # Try to get session to find who granted
+    token = _get_token(request)
+    granted_by = _sessions.get(token, {}).get("user", "admin")
+    expires_at = await add_premium(user_id, days, granted_by=0)
+    return JSONResponse({"ok": True, "expires_at": expires_at.strftime("%Y-%m-%d")})
+
+
+@app.post(f"/adminpanel/{PANEL_SECRET}/api/revoke_premium")
+async def api_revoke_premium(request: Request):
+    """Revoke premium from a user."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    data = await request.json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Missing user_id"})
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "Invalid user_id"})
+    from utils.premium import remove_premium
+    removed = await remove_premium(user_id)
+    return JSONResponse({"ok": removed, "error": "" if removed else "User had no premium"})
+
+
+@app.post(f"/adminpanel/{PANEL_SECRET}/api/extend_premium")
+async def api_extend_premium(request: Request):
+    """Extend (add days on top of current expiry) premium for a user."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    data = await request.json()
+    user_id = data.get("user_id")
+    days = int(data.get("days", 30))
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Missing user_id"})
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "Invalid user_id"})
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    from datetime import timedelta, timezone
+    try:
+        if is_mongo():
+            doc = await get_db().premium_users.find_one({"user_id": user_id})
+            if doc:
+                try:
+                    current_exp = datetime.fromisoformat(str(doc["expires_at"]).replace("Z",""))
+                except Exception:
+                    current_exp = datetime.utcnow()
+            else:
+                current_exp = datetime.utcnow()
+            new_exp = (current_exp if current_exp > datetime.utcnow() else datetime.utcnow()) + timedelta(days=days)
+            await get_db().premium_users.update_one(
+                {"user_id": user_id},
+                {"$set": {"user_id": user_id, "expires_at": new_exp.isoformat(), "granted_at": datetime.utcnow().isoformat()}},
+                upsert=True,
+            )
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                async with conn.execute("SELECT expires_at FROM premium_users WHERE user_id=?", (user_id,)) as cur:
+                    row = await cur.fetchone()
+                if row:
+                    try:
+                        current_exp = datetime.fromisoformat(row[0])
+                    except Exception:
+                        current_exp = datetime.utcnow()
+                else:
+                    current_exp = datetime.utcnow()
+                new_exp = (current_exp if current_exp > datetime.utcnow() else datetime.utcnow()) + timedelta(days=days)
+                await conn.execute(
+                    """INSERT INTO premium_users (user_id, granted_by, expires_at, granted_at)
+                       VALUES (?,?,?,?)
+                       ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at""",
+                    (user_id, 0, new_exp.isoformat(), datetime.utcnow().isoformat())
+                )
+                await conn.commit()
+        return JSONResponse({"ok": True, "new_expires_at": new_exp.strftime("%Y-%m-%d")})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/activity_log")
+async def api_activity_log(request: Request):
+    """Return recent activity log entries from the database."""
+    if not _is_auth(_get_token(request)): raise HTTPException(401)
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    logs = []
+    try:
+        if is_mongo():
+            db = get_db()
+            # Recent premium grants
+            async for d in db.premium_users.find({}).sort("granted_at", -1).limit(5):
+                logs.append({
+                    "color": "var(--yellow)",
+                    "msg": f"⭐ Premium granted to user {d.get('user_id')}",
+                    "time": str(d.get("granted_at",""))[:19],
+                })
+            # Recent bans
+            async for d in db.banned_users.find({}).limit(5):
+                logs.append({
+                    "color": "var(--red)",
+                    "msg": f"🚫 User {d.get('user_id')} banned",
+                    "time": str(d.get("banned_at",""))[:19],
+                })
+            # Recent clone bots
+            async for d in db.clone_bots.find({}).sort("created_at",-1).limit(5):
+                logs.append({
+                    "color": "var(--green)",
+                    "msg": f"🤖 Clone bot @{d.get('bot_username','?')} registered",
+                    "time": str(d.get("created_at",""))[:19],
+                })
+            # Recent giveaways
+            async for d in db.giveaways.find({}).sort("created_at",-1).limit(5):
+                logs.append({
+                    "color": "var(--accent)",
+                    "msg": f"🗳 Giveaway \"{d.get('title','?')}\" created",
+                    "time": str(d.get("created_at",""))[:19],
+                })
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                try:
+                    async with conn.execute("SELECT user_id, granted_at FROM premium_users ORDER BY granted_at DESC LIMIT 5") as cur:
+                        for r in await cur.fetchall():
+                            logs.append({"color":"var(--yellow)","msg":f"⭐ Premium granted to user {r['user_id']}","time":str(r['granted_at'] or '')[:19]})
+                except Exception: pass
+                try:
+                    async with conn.execute("SELECT user_id FROM banned_users LIMIT 5") as cur:
+                        for r in await cur.fetchall():
+                            logs.append({"color":"var(--red)","msg":f"🚫 User {r['user_id']} banned","time":""})
+                except Exception: pass
+                try:
+                    async with conn.execute("SELECT bot_username, created_at FROM clone_bots ORDER BY created_at DESC LIMIT 5") as cur:
+                        for r in await cur.fetchall():
+                            logs.append({"color":"var(--green)","msg":f"🤖 Clone bot @{r['bot_username'] or '?'} registered","time":str(r['created_at'] or '')[:19]})
+                except Exception: pass
+                try:
+                    async with conn.execute("SELECT title, created_at FROM giveaways ORDER BY created_at DESC LIMIT 5") as cur:
+                        for r in await cur.fetchall():
+                            logs.append({"color":"var(--accent)","msg":f"🗳 Giveaway \"{r['title'] or '?'}\" created","time":str(r['created_at'] or '')[:19]})
+                except Exception: pass
+        # sort by time desc
+        logs.sort(key=lambda x: x.get("time",""), reverse=True)
+    except Exception as e:
+        logger.error(f"activity_log error: {e}")
+    return JSONResponse({"logs": logs[:20]})
+
+
 @app.get("/health")
 async def health():
     """Render health check endpoint."""
@@ -1176,21 +1467,20 @@ hr{{border:none;border-top:1px solid #1f1f35;margin:24px 0}}
 
 
 def _admin_html():
-    """Returns the full admin dashboard HTML."""
+    """Returns the full admin dashboard HTML with injected API base path."""
     with open(__file__.replace("app.py","admin_dashboard.html")) as f:
-        return f.read()
-
-
-def _user_panel_html(panel, data):
-    """Returns the user panel HTML with injected data."""
-    panel_type = data["panel_type"]
-    with open(__file__.replace("app.py","user_panel.html")) as f:
         html = f.read()
-    # Inject JSON data
-    html = html.replace("__PANEL_DATA__", json.dumps(data))
-    html = html.replace("__PANEL_TOKEN__", panel["token"])
-    html = html.replace("__PANEL_TYPE__", panel_type)
+    # Inject the real API base so JS never has a hardcoded wrong path
+    api_base = f"/adminpanel/{PANEL_SECRET}"
+    html = html.replace(
+        "const API_BASE = '/adminpanel/royalisbest';",
+        f"const API_BASE = '{api_base}';"
+    )
+    # Also replace any leftover hardcoded paths (belt+suspenders)
+    html = html.replace("/adminpanel/royalisbest/", f"{api_base}/")
     return html
+
+
 
 
 def _not_found_html():
