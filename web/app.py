@@ -132,11 +132,59 @@ def _rate_guard(request: Request):
 
 def _hash_pw(pw): return hashlib.sha256(pw.encode()).hexdigest()
 def _get_token(request): return request.cookies.get("panel_session")
+
+# ── Signed-token auth (survives server restarts) ──────────────
+import hmac as _hmac, hashlib as _hashlib
+
+def _sign_token(raw: str) -> str:
+    """Return raw + '.' + HMAC signature."""
+    sig = _hmac.new(
+        settings.SECRET_KEY.encode(),
+        raw.encode(),
+        _hashlib.sha256
+    ).hexdigest()[:16]
+    return f"{raw}.{sig}"
+
+def _verify_token(token: str) -> bool:
+    """Return True if token has a valid signature and is not expired."""
+    if not token or "." not in token:
+        return False
+    try:
+        parts = token.rsplit(".", 1)
+        if len(parts) != 2:
+            return False
+        raw, sig = parts
+        expected = _hmac.new(
+            settings.SECRET_KEY.encode(),
+            raw.encode(),
+            _hashlib.sha256
+        ).hexdigest()[:16]
+        if not _hmac.compare_digest(sig, expected):
+            return False
+        # raw = "admin:<expiry_timestamp>"
+        _, expiry_str = raw.split(":", 1)
+        return float(expiry_str) > time.time()
+    except Exception:
+        return False
+
+def _make_session_token() -> str:
+    expiry = time.time() + 28800  # 8 hours
+    return _sign_token(f"admin:{expiry}")
+
 def _is_auth(token):
-    if not token or token not in _sessions: return False
-    if _sessions[token] < time.time():
-        del _sessions[token]; return False
-    return True
+    # Support both old in-memory sessions (backward compat) and new signed tokens
+    if not token:
+        return False
+    # New signed token
+    if _verify_token(token):
+        return True
+    # Legacy in-memory session (still works until restart)
+    if token in _sessions:
+        if _sessions[token] < time.time():
+            del _sessions[token]
+            return False
+        return True
+    return False
 
 # ══════════════════════════════════════════════════════════════
 # AUTH
@@ -181,8 +229,7 @@ async def login_post(request: Request):
     try:
         form = await request.form()
         if await _check_creds(form.get("username",""), form.get("password","")):
-            tok = secrets.token_hex(32)
-            _sessions[tok] = time.time() + 28800
+            tok = _make_session_token()
             r = RedirectResponse(url=f"/adminpanel/{PANEL_SECRET}/a?{PANEL_PARAM}", status_code=302)
             r.set_cookie("panel_session", tok, httponly=True, max_age=28800, path="/", samesite="lax")
             return r
@@ -556,10 +603,7 @@ def _user_panel_html(panel, data):
 @app.get("/panel/{token}/api/data")
 async def user_panel_data(token: str, request: Request):
     _rate_guard(request)
-    # Referer must be our own panel page — blocks external API scraping
-    referer = request.headers.get("referer", "")
-    if token not in referer:
-        raise HTTPException(403, detail="Forbidden")
+    # Token is in the URL path itself — that IS the auth. No referer check needed.
     from models.panel import get_panel
     panel = await get_panel(token)
     if not panel: raise HTTPException(404)
@@ -581,7 +625,12 @@ async def user_panel_data(token: str, request: Request):
             if archived:
                 return JSONResponse({"archived": True, **archived})
             raise HTTPException(410, detail="Giveaway archived and data unavailable")
-    return JSONResponse(await _build_panel_data(panel))
+    try:
+        data = await _build_panel_data(panel)
+    except Exception as e:
+        logger.error(f"user_panel_data build failed token={token}: {e}")
+        raise HTTPException(500, detail="Failed to build panel data")
+    return JSONResponse(data)
 
 
 @app.post("/panel/{token}/delete")
@@ -1841,7 +1890,7 @@ async def api_unban_clone(request: Request):
 
 @app.post(f"/adminpanel/{PANEL_SECRET}/api/close_giveaway")
 async def api_close_giveaway(request: Request):
-    """Close/end a live giveaway — called by new dashboard."""
+    """Close/end a live giveaway and archive it with full stats."""
     if not _is_auth(_get_token(request)):
         raise HTTPException(401)
     data = await request.json()
@@ -1853,7 +1902,7 @@ async def api_close_giveaway(request: Request):
         if is_mongo():
             await get_db().giveaways.update_one(
                 {"giveaway_id": giveaway_id},
-                {"$set": {"is_active": False}}
+                {"$set": {"is_active": False, "closed_at": datetime.utcnow().isoformat()}}
             )
         else:
             import aiosqlite
@@ -1866,7 +1915,91 @@ async def api_close_giveaway(request: Request):
     except Exception as e:
         logger.error(f"close_giveaway error: {e}")
         return JSONResponse({"ok": False, "error": str(e)})
-    return JSONResponse({"ok": True})
+
+    # Archive in background — don't block the response
+    from utils.log_utils import get_main_bot
+    bot = get_main_bot()
+    if bot:
+        import asyncio as _asyncio
+        async def _bg_archive():
+            try:
+                from utils.giveaway_archive import archive_and_purge
+                await archive_and_purge(bot, giveaway_id)
+                logger.info(f"✅ Admin dashboard archived giveaway {giveaway_id}")
+            except Exception as _e:
+                logger.warning(f"Admin close_giveaway archive failed (non-fatal): {_e}")
+        _asyncio.create_task(_bg_archive())
+        return JSONResponse({"ok": True, "archiving": True})
+
+    return JSONResponse({"ok": True, "archiving": False})
+
+
+@app.get(f"/adminpanel/{PANEL_SECRET}/api/download_giveaway")
+async def api_download_giveaway(request: Request, giveaway_id: str):
+    """
+    Download the archived giveaway JSON file directly.
+    Fetches from Telegram and streams it back to the admin browser.
+    """
+    if not _is_auth(_get_token(request)):
+        raise HTTPException(401)
+    if not giveaway_id:
+        raise HTTPException(400, detail="Missing giveaway_id")
+
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    import io
+
+    # 1. Look up file_id from archive refs
+    file_id = None
+    meta = {}
+    try:
+        if is_mongo():
+            doc = await get_db().giveaway_archive_refs.find_one({"giveaway_id": giveaway_id.upper()})
+            if doc:
+                file_id = doc.get("file_id")
+                meta = doc
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                async with conn.execute(
+                    "SELECT * FROM giveaway_archive_refs WHERE giveaway_id=?", (giveaway_id.upper(),)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row:
+                    meta = dict(row)
+                    file_id = meta.get("file_id")
+    except Exception as e:
+        logger.error(f"download_giveaway lookup error: {e}")
+        raise HTTPException(500, detail=str(e))
+
+    if not file_id:
+        raise HTTPException(404, detail="No archived file found for this giveaway")
+
+    # 2. Fetch from Telegram
+    from utils.log_utils import get_main_bot
+    bot = get_main_bot()
+    if not bot:
+        raise HTTPException(503, detail="Bot not ready — try again in a moment")
+    try:
+        tg_file = await bot.get_file(file_id)
+        buf = io.BytesIO()
+        await bot.download_file(tg_file.file_path, destination=buf)
+        buf.seek(0)
+        content_bytes = buf.read()
+    except Exception as e:
+        logger.error(f"download_giveaway Telegram fetch error: {e}")
+        raise HTTPException(502, detail=f"Could not fetch file from Telegram: {e}")
+
+    filename = f"giveaway_{giveaway_id}.json"
+    from starlette.responses import Response
+    return Response(
+        content=content_bytes,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content_bytes)),
+        }
+    )
 
 
 # ══════════════════════════════════════════════════════════════
