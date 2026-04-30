@@ -352,7 +352,7 @@ function init(){
                 y:{grid:{color:'rgba(28,28,46,.7)'},ticks:{color:'#7c7c9a',font:{size:9,family:'JetBrains Mono'}}}}}});
   } else {
     document.getElementById('growthChart').parentElement.innerHTML =
-      '<p style="text-align:center;color:var(--muted);font-size:12px;padding:32px 16px">Snapshots taken every 30 min — check back soon</p>';
+      '<p style="text-align:center;color:var(--muted);font-size:12px;padding:32px 16px">📊 Collecting growth data — snapshots every 30 min</p>';
   }
 
   if(isGA) initGiveaway(d);
@@ -484,6 +484,50 @@ async function deletePanel(){
 }
 
 init();
+
+// ── Auto-refresh stats every 2 minutes ─────────────────────
+async function refreshPanelData(){
+  try{
+    const r = await fetch('/panel/' + TOKEN + '/api/data', {headers:{'Referer': window.location.href}});
+    if(!r.ok) return;
+    const d = await r.json();
+    if(d.archived) return;
+    // Update member numbers
+    const gain = d.member_gain || 0;
+    document.getElementById('ch-before').textContent = (d.member_start || 0).toLocaleString();
+    document.getElementById('ch-now').textContent    = (d.member_current || 0).toLocaleString();
+    const gainEl = document.getElementById('ch-gain');
+    gainEl.textContent = (gain >= 0 ? '+' : '') + gain.toLocaleString();
+    gainEl.className = 'ch-num-val ' + (gain >= 0 ? 'pos' : 'neg');
+    // Update quick stats
+    const isGA = d.panel_type === 'giveaway';
+    let qs;
+    if(isGA){
+      qs = [
+        {v: (d.total_votes||0).toLocaleString(), l:'Total Votes'},
+        {v: (d.votes_data||[]).length, l:'Participants'},
+        {v: pct((d.votes_data||[])[0]?.votes||0, d.total_votes)+'%', l:'Top Share'},
+        {v: (gain>=0?'+':'')+gain, l:'Member Gain'},
+      ];
+    } else {
+      qs = [
+        {v: (d.total_refs||0).toLocaleString(), l:'Total Users'},
+        {v: (d.top_referrers||[]).filter(u=>u.refs>0).length, l:'Referrers'},
+        {v: (d.top_referrers||[])[0]?.refs||0, l:'Top Refs'},
+        {v: (gain>=0?'+':'')+gain, l:'Member Gain'},
+      ];
+    }
+    document.getElementById('qs-row').innerHTML = qs.map(q =>
+      '<div class="qc"><div class="qc-val">' + q.v + '</div><div class="qc-lbl">' + q.l + '</div></div>'
+    ).join('');
+    // Update meta
+    document.getElementById('p-meta').innerHTML =
+      '<span>📢 ' + (d.channel_username || '') + '</span>' +
+      '<span>📅 ' + d.created_at + '</span>' +
+      (isGA ? '<span>👥 ' + d.total_votes + ' votes</span>' : '<span>👥 ' + d.total_refs + ' users</span>');
+  }catch(e){}
+}
+setInterval(refreshPanelData, 120000); // refresh every 2 min
 </script>
 </body>
 </html>
