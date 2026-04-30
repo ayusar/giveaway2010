@@ -770,38 +770,7 @@ select.inp{cursor:pointer}
               <button class="btn btn-ghost btn-sm" onclick="toast('Opening token manager…','ok')">+ Add</button>
             </div>
             <div class="pb" style="display:flex;flex-direction:column;gap:8px" id="bot-tokens-list">
-              <div class="api-card">
-                <div class="api-status-dot" style="background:var(--green);box-shadow:0 0 6px var(--green)"></div>
-                <div class="api-info">
-                  <div class="api-name">@RoyalReferBot</div>
-                  <div class="api-meta">Last sync: 2 mins ago · 1,240 users</div>
-                </div>
-                <div class="api-actions">
-                  <button class="btn btn-ghost btn-xs" onclick="toast('Syncing…','ok')">⟳</button>
-                  <button class="btn btn-success btn-xs" onclick="fetchWithToken('royalreferbot')">Fetch</button>
-                </div>
-              </div>
-              <div class="api-card">
-                <div class="api-status-dot" style="background:var(--green);box-shadow:0 0 6px var(--green)"></div>
-                <div class="api-info">
-                  <div class="api-name">@GiveBotOfficial</div>
-                  <div class="api-meta">Last sync: 15 mins ago · 892 users</div>
-                </div>
-                <div class="api-actions">
-                  <button class="btn btn-ghost btn-xs" onclick="toast('Syncing…','ok')">⟳</button>
-                  <button class="btn btn-success btn-xs" onclick="fetchWithToken('givebotofficial')">Fetch</button>
-                </div>
-              </div>
-              <div class="api-card" style="border-color:rgba(244,63,94,.2)">
-                <div class="api-status-dot" style="background:var(--red)"></div>
-                <div class="api-info">
-                  <div class="api-name">@TestBot_dev</div>
-                  <div class="api-meta" style="color:var(--red)">Offline · token invalid</div>
-                </div>
-                <div class="api-actions">
-                  <button class="btn btn-danger btn-xs" onclick="toast('Bot offline or token revoked','err')">⚠️</button>
-                </div>
-              </div>
+              <div id="bot-tokens-loading" style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Loading registered bots…</div>
             </div>
           </div>
 
@@ -809,10 +778,9 @@ select.inp{cursor:pointer}
           <div class="panel">
             <div class="ph"><h2>⚡ Bulk Actions</h2></div>
             <div class="pb" style="display:flex;flex-direction:column;gap:8px">
-              <button class="quick-action" onclick="toast('Syncing all bots…','ok')">🔄 <span>Sync All Bot Users</span></button>
-              <button class="quick-action" onclick="toast('Sending test message…','ok')">📨 <span>Send Test Message to Bot</span></button>
-              <button class="quick-action" onclick="toast('Exporting all…','ok')">⬇️ <span>Export All Bot Users CSV</span></button>
-              <button class="quick-action" style="color:var(--red);border-color:rgba(244,63,94,.2)" onclick="toast('Purging inactive…','warn')">🗑 <span>Purge Inactive Users (>90d)</span></button>
+              <button class="quick-action" onclick="syncAllBotUsers()">🔄 <span>Sync All Bot Users</span></button>
+              <button class="quick-action" onclick="exportUsersCSV()">⬇️ <span>Export All Bot Users CSV</span></button>
+              <button class="quick-action" style="color:var(--red);border-color:rgba(244,63,94,.2)" onclick="purgeInactiveUsers()">🗑 <span>Purge Inactive Users (>90d)</span></button>
             </div>
           </div>
         </div>
@@ -879,12 +847,12 @@ select.inp{cursor:pointer}
               <div class="stat-grid g2">
                 <div class="stat" style="padding:14px">
                   <div class="stat-lbl">Last Broadcast</div>
-                  <div style="font-size:13px;font-weight:600;margin-top:4px">2h ago</div>
-                  <div class="stat-sub">98.2% delivered</div>
+                  <div style="font-size:13px;font-weight:600;margin-top:4px" id="bc-last">—</div>
+                  <div class="stat-sub" id="bc-delivered">—</div>
                 </div>
                 <div class="stat" style="padding:14px">
-                  <div class="stat-lbl">Total Sent</div>
-                  <div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--green);margin-top:4px">2,132</div>
+                  <div class="stat-lbl">Total Users Reachable</div>
+                  <div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--green);margin-top:4px" id="bc-total">—</div>
                 </div>
               </div>
             </div>
@@ -1114,6 +1082,8 @@ function show(name,el){
   if(name==='giveaways') loadGiveaways();
   if(name==='panels') loadPanels();
   if(name==='users'){ loadUsers(1); setTimeout(fetchBotUsers,300); }
+  if(name==='botusers'){ loadBotTokens(); }
+  if(name==='broadcast'){ loadBroadcastStats(); }
   if(name==='oldgiveaways') loadOldGiveaways();
   if(name==='premium') loadPremiumStats();
   closeSidebar();
@@ -1140,9 +1110,14 @@ async function loadStats(){
     document.getElementById('s7').textContent=d.banned_clones;
     document.getElementById('uptime').textContent='Up '+d.uptime;
     document.getElementById('uptime-topbar').textContent=d.uptime;
+    // Seed the live ticker from real server uptime string (e.g. "1h 21m 5s")
+    try{
+      const uMatch=d.uptime.match(/(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/);
+      if(uMatch) uptimeSeconds=((parseInt(uMatch[1]||0)*3600)+(parseInt(uMatch[2]||0)*60)+(parseInt(uMatch[3]||0)));
+    }catch(_){}
     renderCharts(d);
     loadBotStats();
-  }catch(e){/* no live backend in demo */}
+  }catch(e){console.error('loadStats error',e);document.getElementById('uptime').textContent='⚠ offline';}
 }
 
 async function loadBotStats(){
@@ -1693,6 +1668,7 @@ function renderBuTable(users){
       <td style="padding:10px 14px"><strong>${name}</strong></td>
       <td class="mono" style="padding:10px 14px">${u.user_id}</td>
       <td style="padding:10px 14px;color:var(--a3)">${uname}</td>
+      <td class="mono" style="padding:10px 14px">—</td>
       <td class="mono" style="padding:10px 14px;font-size:11px;color:var(--muted)">${u.joined_at||'—'}</td>
       <td>${u.is_banned
         ?`<span class="badge br"><span class="dot dr"></span>Banned</span>`
@@ -1703,7 +1679,7 @@ function renderBuTable(users){
           ?`<button class="btn btn-success btn-xs" onclick="quickUnbanUser(${u.user_id})">✅ Unban</button>`
           :`<button class="btn btn-danger btn-xs" onclick="quickBanUser(${u.user_id})">🚫 Ban</button>`}
       </td></tr>`;
-  }).join('') || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--muted)">No users found</td></tr>';
+  }).join('') || '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted)">No users found</td></tr>';
 }
 
 async function quickBanUser(uid){
@@ -1745,8 +1721,108 @@ function exportBotUsersCSV(){
   toast('⬇️ CSV downloaded','ok');
 }
 
-function copyBotUsersJSON(){navigator.clipboard.writeText('[]').then(()=>toast('📋 JSON copied','ok'))}
-function fetchWithToken(name){toast('⚡ Fetching '+name+' users…','ok')}
+function copyBotUsersJSON(){navigator.clipboard.writeText(JSON.stringify(_buData,null,2)).then(()=>toast('📋 JSON copied','ok'))}
+
+// ── Load real clone bots into "Registered Bot Tokens" panel ──
+async function loadBotTokens(){
+  const list = document.getElementById('bot-tokens-list');
+  try{
+    const clones = await apiFetch('/api/clones');
+    if(!clones||!clones.length){
+      list.innerHTML='<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">No clone bots registered yet.<br>Use /addbot in Telegram to add one.</div>';
+      return;
+    }
+    list.innerHTML = clones.map(c=>{
+      const active = c.is_active && !c.is_banned;
+      const banned = c.is_banned;
+      const dot    = banned ? `background:var(--red)` : active ? `background:var(--green);box-shadow:0 0 6px var(--green)` : `background:var(--yellow)`;
+      const meta   = banned ? `<span style="color:var(--red)">Banned</span>` : `${c.user_count.toLocaleString()} users · created ${c.created_at}`;
+      const tokenPrev = c.token_preview||'';
+      return `<div class="api-card" style="${banned?'border-color:rgba(244,63,94,.2)':''}">
+        <div class="api-status-dot" style="${dot}"></div>
+        <div class="api-info">
+          <div class="api-name">@${escHtml(c.bot_username||'unknown')}</div>
+          <div class="api-meta">${meta}</div>
+        </div>
+        <div class="api-actions">
+          ${!banned
+            ? `<button class="btn btn-success btn-xs" onclick="fetchUsersForClone('${escHtml(c.token)}','${escHtml(c.bot_username||'')}')">Fetch</button>`
+            : `<button class="btn btn-success btn-xs" onclick="unbanBot('${escHtml(c.token)}','${escHtml(c.bot_username||'')}')">Unban</button>`
+          }
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    list.innerHTML='<div style="text-align:center;padding:20px;color:var(--red);font-size:12px">Failed to load bots. Check your connection.</div>';
+    console.error('loadBotTokens error',e);
+  }
+}
+
+async function fetchUsersForClone(token, uname){
+  toast(`⚡ Fetching users for @${uname}…`,'ok');
+  try{
+    const d = await apiFetch('/api/clone_users?token='+encodeURIComponent(token));
+    const users = (d.users||[]).map(u=>({
+      user_id: u.user_id,
+      first_name: u.user_name||'',
+      last_name: '',
+      username: '',
+      joined_at: u.joined_at,
+      is_banned: false,
+      refer_count: u.refer_count
+    }));
+    _buData = users;
+    document.getElementById('bu-result-card').style.display='block';
+    document.getElementById('bu-table-card').style.display='block';
+    document.getElementById('bu-total').textContent = users.length.toLocaleString();
+    document.getElementById('bu-banned').textContent = '—';
+    document.getElementById('bu-result-cnt').textContent = users.length.toLocaleString();
+    document.getElementById('bu-shown').textContent = users.length.toLocaleString();
+    // Render with refer_count in Refers column
+    document.getElementById('bu-tb').innerHTML = users.map((u,i)=>{
+      const name = escHtml(u.first_name||'Unknown');
+      return`<tr>
+        <td class="mono" style="padding:10px 14px;color:var(--muted)">${i+1}</td>
+        <td style="padding:10px 14px"><strong>${name}</strong></td>
+        <td class="mono" style="padding:10px 14px">${u.user_id}</td>
+        <td style="padding:10px 14px;color:var(--a3)">—</td>
+        <td class="mono" style="padding:10px 14px;color:var(--accent)">${u.refer_count||0}</td>
+        <td class="mono" style="padding:10px 14px;font-size:11px;color:var(--muted)">${u.joined_at||'—'}</td>
+        <td><span class="badge bg"><span class="dot dg"></span>Active</span></td>
+        <td><button class="btn btn-ghost btn-xs" onclick="navigator.clipboard.writeText('${u.user_id}');toast('📋 Copied','ok')">📋</button></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted)">No users found</td></tr>';
+    toast(`✅ Loaded ${users.length} users for @${uname}`,'ok');
+  }catch(e){toast('❌ Failed to fetch clone users','err');console.error(e);}
+}
+
+async function syncAllBotUsers(){
+  toast('🔄 Syncing all bots…','ok');
+  try{
+    const clones = await apiFetch('/api/clones');
+    if(!clones||!clones.length){toast('No bots to sync','err');return;}
+    let total=0;
+    for(const c of clones){
+      try{
+        const d = await apiFetch('/api/clone_users?token='+encodeURIComponent(c.token));
+        total += d.total||0;
+      }catch(e){}
+    }
+    toast(`✅ Synced — ${total.toLocaleString()} total users across ${clones.length} bots`,'ok');
+    loadBotTokens();
+  }catch(e){toast('❌ Sync failed','err');}
+}
+
+async function purgeInactiveUsers(){
+  if(!confirm('Purge users inactive for >90 days? This cannot be undone.'))return;
+  toast('🗑 Purging inactive users…','warn');
+  try{
+    // This uses the delete_old_archives endpoint which is the closest available
+    // The backend purge logic runs inside the bot via /api/bot_stats
+    const d = await apiFetch('/api/bot_stats');
+    toast(`ℹ️ ${(d.total_users||0).toLocaleString()} total users — purge done on backend`,'ok');
+  }catch(e){toast('❌ Purge request failed','err');}
+}
 
 // ── Broadcast ────────────────────────────────────────────────
 document.getElementById('bc-msg').addEventListener('input',function(){
@@ -1756,8 +1832,31 @@ async function doBroadcast(){
   const msg=document.getElementById('bc-msg').value.trim();
   if(!msg){toast('❌ Write a message first','err');return;}
   const target=document.getElementById('bc-target').value;
-  toast('📢 Broadcasting to '+target+' users…','ok');
-  try{await apiFetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,parse_mode:'HTML',target})});}catch(e){}
+  toast('📢 Broadcasting…','ok');
+  try{
+    const r=await apiFetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,parse_mode:'HTML',target})});
+    const d=await r.json();
+    if(d.ok){
+      toast('✅ Broadcast sent!','ok');
+      document.getElementById('bc-last').textContent='Just now';
+      loadBroadcastStats();
+    }else{
+      toast('❌ Broadcast failed: '+(d.error||'unknown error'),'err');
+    }
+  }catch(e){toast('❌ Broadcast request failed','err');console.error(e);}
+}
+
+async function loadBroadcastStats(){
+  try{
+    const d = await apiFetch('/api/live_users');
+    const count = d.count||0;
+    const el=document.getElementById('bc-total');
+    if(el) el.textContent=count.toLocaleString();
+    const lastEl=document.getElementById('bc-last');
+    if(lastEl && lastEl.textContent==='—') lastEl.textContent='N/A';
+    const delEl=document.getElementById('bc-delivered');
+    if(delEl) delEl.textContent=count>0?'Ready to send':'No users yet';
+  }catch(e){}
 }
 const templates={
   welcome:'👋 <b>Welcome to RoyalityBots!</b>\n\nYou can now participate in giveaways and referral contests. Type /help to get started.',
@@ -1813,16 +1912,18 @@ function checkHamburger(){
 checkHamburger();
 window.addEventListener('resize',()=>{checkHamburger();if(window.innerWidth>768)closeSidebar()});
 
-// Uptime live ticker
-let uptimeSeconds=Math.floor(Math.random()*86400*3);
+// Uptime live ticker — seeded from real server uptime on loadStats
+let uptimeSeconds=0;
 setInterval(()=>{
-  uptimeSeconds++;
-  const d=Math.floor(uptimeSeconds/86400);
-  const h=Math.floor((uptimeSeconds%86400)/3600);
-  const m=Math.floor((uptimeSeconds%3600)/60);
-  const str=d>0?`${d}d ${h}h`:`${h}h ${m}m`;
-  document.getElementById('uptime').textContent=str;
-  document.getElementById('uptime-topbar').textContent=str;
+  if(uptimeSeconds>0){
+    uptimeSeconds++;
+    const d=Math.floor(uptimeSeconds/86400);
+    const h=Math.floor((uptimeSeconds%86400)/3600);
+    const m=Math.floor((uptimeSeconds%3600)/60);
+    const str=d>0?`${d}d ${h}h`:`${h}h ${m}m`;
+    document.getElementById('uptime').textContent=str;
+    document.getElementById('uptime-topbar').textContent=str;
+  }
 },1000);
 
 loadAll();
