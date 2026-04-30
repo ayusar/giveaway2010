@@ -146,13 +146,7 @@ async def form_channel_id(message: Message, state: FSMContext, bot: Bot):
         pass
     if not ok:
         logger.warning(f"[GIVEAWAY] form_channel_id: admin check FAILED user={user_id} channel={channel}")
-        try:
-            await message.answer(err, parse_mode="HTML", reply_markup=_cancel_keyboard())
-        except Exception:
-            # HTML parse failed — send as plain text so user always gets a response
-            import re
-            plain = re.sub(r"<[^>]+>", "", err)
-            await message.answer(plain, reply_markup=_cancel_keyboard())
+        await message.answer(err, parse_mode="HTML", reply_markup=_cancel_keyboard())
         return
     logger.info(f"[GIVEAWAY] form_channel_id: admin check PASSED user={user_id} channel={channel}")
     # ─────────────────────────────────────────────────────────────
