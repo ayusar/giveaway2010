@@ -63,39 +63,56 @@ async def verify_channel_admin(
             "Please enter a public channel (e.g. <code>@mychannel</code>)."
         )
 
-    # ── 2. Check membership status ──────────────────────────
+    # ── 2. Check membership status via admin list ────────────
+    # IMPORTANT: For broadcast channels, get_chat_member() raises an error
+    # for non-admins because regular members are not exposed by the Bot API.
+    # The correct and reliable approach is to fetch the full admin list and
+    # check if the user is present there.
     try:
-        member = await bot.get_chat_member(chat_id, user_id)
-        status = member.status
+        admins = await bot.get_chat_administrators(chat_id)
+        user_admin_entry = next((m for m in admins if m.user.id == user_id), None)
+
+        if user_admin_entry is None:
+            return False, (
+                f"🚫 <b>Access Denied</b>\n\n"
+                f"You are <b>not an admin</b> of <b>{chat_title}</b>.\n\n"
+                "Only channel <b>owners</b> and <b>admins</b> can create giveaways "
+                "or referral bots for a channel.\n\n"
+                "👉 Ask the channel owner to make you an admin first."
+            )
+
+        status = user_admin_entry.status
+        if status not in _ADMIN_STATUSES:
+            return False, (
+                f"🚫 <b>Access Denied</b>\n\n"
+                f"You are <b>not an admin</b> of <b>{chat_title}</b>.\n\n"
+                f"Your status: <code>{status}</code>\n\n"
+                "Only channel <b>owners</b> and <b>admins</b> can create giveaways "
+                "or referral bots for a channel.\n\n"
+                "👉 Ask the channel owner to make you an admin first."
+            )
+
     except TelegramForbiddenError:
         return False, (
             "❌ <b>Bot lacks permission</b>\n\n"
-            f"The bot cannot read admin list for <code>{chat_title}</code>.\n"
+            f"The bot cannot read the admin list for <code>{chat_title}</code>.\n"
             "Please make sure the bot is an <b>Admin</b> with at least "
             "<i>Manage channel</i> permission."
         )
     except Exception as e:
-        logger.warning(f"verify_channel_admin: get_chat_member failed for {user_id} in {channel}: {e}")
+        logger.warning(
+            f"verify_channel_admin: get_chat_administrators failed for {channel}: {e}"
+        )
         return False, (
             f"❌ Could not verify your admin status in <code>{chat_title}</code>.\n\n"
             f"Error: <code>{e}</code>"
         )
 
-    if status not in _ADMIN_STATUSES:
-        return False, (
-            f"🚫 <b>Access Denied</b>\n\n"
-            f"You are <b>not an admin</b> of <b>{chat_title}</b>.\n\n"
-            f"Your status: <code>{status}</code>\n\n"
-            "Only channel <b>owners</b> and <b>admins</b> can create giveaways "
-            "or referral bots for a channel.\n\n"
-            "👉 Ask the channel owner to make you an admin first."
-        )
-
     # ── 3. Also verify the bot itself is admin ───────────────
     try:
         me = await bot.get_me()
-        bot_member = await bot.get_chat_member(chat_id, me.id)
-        if bot_member.status not in _ADMIN_STATUSES:
+        bot_is_admin = any(m.user.id == me.id for m in admins)
+        if not bot_is_admin:
             return False, (
                 f"⚠️ <b>Bot is not an admin in {chat_title}</b>\n\n"
                 "The bot needs to be an <b>Admin</b> in your channel to post giveaways.\n\n"
@@ -106,7 +123,7 @@ async def verify_channel_admin(
             )
     except Exception as e:
         logger.warning(f"verify_channel_admin: bot self-check failed for {channel}: {e}")
-        # Non-fatal — some channels allow non-admin bots to post if added manually
+        # Non-fatal — proceed if we can't verify the bot's own status
 
     logger.info(
         f"verify_channel_admin: ✅ user={user_id} is {status} in "
