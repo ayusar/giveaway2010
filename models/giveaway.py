@@ -154,12 +154,22 @@ async def _sqlite_record_vote(giveaway_id, user_id, user_name, option_index):
             "SELECT votes, total_votes FROM giveaways WHERE giveaway_id=?", (giveaway_id,)
         ) as cur:
             row = await cur.fetchone()
-        votes = json.loads(row[0])
+        if not row:
+            await conn.commit()
+            return True
+        votes_raw = row[0] or "{}"
+        if isinstance(votes_raw, str):
+            try:
+                votes = json.loads(votes_raw)
+            except Exception:
+                votes = {}
+        else:
+            votes = votes_raw if isinstance(votes_raw, dict) else {}
         key = str(option_index)
         votes[key] = votes.get(key, 0) + 1
         await conn.execute(
             "UPDATE giveaways SET votes=?, total_votes=? WHERE giveaway_id=?",
-            (json.dumps(votes), row[1] + 1, giveaway_id)
+            (json.dumps(votes), (row[1] or 0) + 1, giveaway_id)
         )
         await conn.commit()
     return True
@@ -257,12 +267,22 @@ async def record_vote_unlimited(giveaway_id: str, user_id: int, user_name: str, 
                 (giveaway_id,)
             ) as cur:
                 row = await cur.fetchone()
-            votes = _json.loads(row[0])
+            if not row:
+                await conn.commit()
+                return True
+            votes_raw = row[0] or "{}"
+            if isinstance(votes_raw, str):
+                try:
+                    votes = _json.loads(votes_raw)
+                except Exception:
+                    votes = {}
+            else:
+                votes = votes_raw if isinstance(votes_raw, dict) else {}
             key = str(option_index)
             votes[key] = votes.get(key, 0) + 1
             await conn.execute(
                 "UPDATE giveaways SET votes=?, total_votes=? WHERE giveaway_id=?",
-                (_json.dumps(votes), row[1] + 1, giveaway_id)
+                (_json.dumps(votes), (row[1] or 0) + 1, giveaway_id)
             )
             await conn.commit()
     return True
