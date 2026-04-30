@@ -139,8 +139,8 @@ async def my_giveaways(event):
 
 
 @router.callback_query(F.data == "menu:refer_giveaway")
-async def menu_refer_giveaway(callback: CallbackQuery):
+async def menu_refer_giveaway(callback: CallbackQuery, state: FSMContext):
     """Redirect refer giveaway to the clone bot flow."""
     await callback.answer()
-    from handlers.clone_bot import start_clone_bot
-    await start_clone_bot(callback)
+    from handlers.clone_bot import start_clone_setup
+    await start_clone_setup(callback, state)
