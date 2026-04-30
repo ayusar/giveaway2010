@@ -1,5 +1,5 @@
 """
-utils/channel_admin_chek.py
+utils/channel_admin_check.py
 
 Utility to verify that a Telegram user is an admin (or owner) of a channel
 before letting them create a giveaway poll or referral bot for that channel.
