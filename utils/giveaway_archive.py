@@ -101,12 +101,82 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
         logger.warning(f"archive_and_purge: giveaway {giveaway_id} not found")
         return False
 
-    # ── 2. Build archive payload ──────────────────────────────
+    # ── 2. Build archive payload (enriched with panel/member stats) ─
     print(f"[ARCHIVE] Building JSON payload...", flush=True)
+
+    # Fetch panel data for this giveaway (member stats, snapshots)
+    member_stats = {}
+    try:
+        from utils.db import get_db as _gdb, is_mongo as _im, get_sqlite_path as _gsp
+        if _im():
+            panel_doc = await _gdb().panels.find_one({"ref_id": giveaway_id, "panel_type": "giveaway"})
+        else:
+            import aiosqlite as _aio
+            async with _aio.connect(_gsp()) as _conn:
+                _conn.row_factory = _aio.Row
+                async with _conn.execute(
+                    "SELECT * FROM panels WHERE ref_id=? AND panel_type='giveaway' LIMIT 1", (giveaway_id,)
+                ) as _cur:
+                    _row = await _cur.fetchone()
+                panel_doc = dict(_row) if _row else None
+
+        if panel_doc:
+            snaps_raw = panel_doc.get("member_snapshots", [])
+            if isinstance(snaps_raw, str):
+                try:
+                    snaps_raw = json.loads(snaps_raw) if snaps_raw else []
+                except Exception:
+                    snaps_raw = []
+            member_start   = panel_doc.get("member_start", 0)
+            member_final   = snaps_raw[-1]["c"] if snaps_raw else member_start
+            member_gained  = member_final - member_start
+            member_stats = {
+                "channel_title":    panel_doc.get("channel_title", ""),
+                "channel_username": panel_doc.get("channel_username", ""),
+                "member_start":     member_start,
+                "member_final":     member_final,
+                "member_gained":    member_gained,
+                "snapshots":        snaps_raw,
+                "panel_token":      panel_doc.get("token", ""),
+            }
+    except Exception as _e:
+        logger.warning(f"archive_and_purge: could not fetch panel stats: {_e}")
+
+    # Build final votes summary
+    raw_votes_dict = giveaway.get("votes", {}) or {}
+    if isinstance(raw_votes_dict, str):
+        try:
+            raw_votes_dict = json.loads(raw_votes_dict)
+        except Exception:
+            raw_votes_dict = {}
+    options = giveaway.get("options", [])
+    votes_summary = [
+        {"option": options[int(k)] if int(k) < len(options) else k,
+         "votes": v,
+         "pct": round(v / max(giveaway.get("total_votes", 1), 1) * 100, 1)}
+        for k, v in raw_votes_dict.items()
+    ]
+    votes_summary.sort(key=lambda x: x["votes"], reverse=True)
+
     archive = {
-        "archived_at": datetime.now(timezone.utc).isoformat(),
-        "giveaway":    giveaway,
-        "votes":       all_votes,
+        "archived_at":    datetime.now(timezone.utc).isoformat(),
+        "giveaway":       giveaway,
+        "votes":          all_votes,
+        "votes_summary":  votes_summary,
+        "member_stats":   member_stats,
+        "summary": {
+            "giveaway_id":   giveaway_id,
+            "title":         giveaway.get("title", ""),
+            "total_votes":   giveaway.get("total_votes", 0),
+            "options_count": len(options),
+            "created_at":    str(giveaway.get("created_at", ""))[:19],
+            "closed_at":     datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "channel":       member_stats.get("channel_username", ""),
+            "member_start":  member_stats.get("member_start", 0),
+            "member_final":  member_stats.get("member_final", 0),
+            "member_gained": member_stats.get("member_gained", 0),
+            "winner":        votes_summary[0]["option"] if votes_summary else "N/A",
+        },
     }
 
     def _default(obj):
@@ -135,17 +205,25 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
     created_at  = str(giveaway.get("created_at", ""))[:19]
     end_date    = str(giveaway.get("end_time", ""))[:19] or str(datetime.now(timezone.utc))[:19]
     archived_at = datetime.now(timezone.utc).isoformat()
+    winner_line = f"\n🏆 <b>Winner:</b> {votes_summary[0]['option']} ({votes_summary[0]['votes']} votes)" if votes_summary else ""
+    m_start  = member_stats.get("member_start", 0)
+    m_final  = member_stats.get("member_final", 0)
+    m_gained = member_stats.get("member_gained", 0)
+    ch_name  = member_stats.get("channel_username", "—")
+    gain_str = f"+{m_gained}" if m_gained >= 0 else str(m_gained)
 
     caption = (
         f"📦 <b>Giveaway Archived</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 <b>ID:</b> <code>{giveaway_id}</code>\n"
         f"🏷 <b>Title:</b> {title}\n"
-        f"👥 <b>Total Votes:</b> {total_v}\n"
+        f"📢 <b>Channel:</b> {ch_name}\n"
+        f"👥 <b>Total Votes:</b> {total_v}{winner_line}\n"
+        f"📈 <b>Members:</b> {m_start} → {m_final} ({gain_str} gained)\n"
         f"📅 <b>Created:</b> {created_at} UTC\n"
         f"⏰ <b>Ended:</b> {end_date} UTC\n"
         f"📦 <b>Archived:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC\n\n"
-        f"⬇️ Download this file to restore or view old data.\n"
+        f"⬇️ Download this file to restore or view full data.\n"
         f"Use <code>/getgiveaway {giveaway_id}</code> in bot to retrieve it."
     )
 
@@ -179,14 +257,19 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
                 get_db().giveaway_archive_refs.update_one(
                     {"giveaway_id": giveaway_id},
                     {"$set": {
-                        "giveaway_id": giveaway_id,
-                        "file_id":     file_id,
-                        "title":       title,
-                        "creator_id":  creator_id,
-                        "created_at":  created_at,
-                        "end_date":    end_date,
-                        "total_votes": total_v,
-                        "archived_at": archived_at,
+                        "giveaway_id":   giveaway_id,
+                        "file_id":       file_id,
+                        "title":         title,
+                        "creator_id":    creator_id,
+                        "created_at":    created_at,
+                        "end_date":      end_date,
+                        "total_votes":   total_v,
+                        "archived_at":   archived_at,
+                        "channel":       member_stats.get("channel_username",""),
+                        "member_start":  member_stats.get("member_start", 0),
+                        "member_final":  member_stats.get("member_final", 0),
+                        "member_gained": member_stats.get("member_gained", 0),
+                        "winner":        votes_summary[0]["option"] if votes_summary else "",
                     }},
                     upsert=True,
                 ),
@@ -197,22 +280,34 @@ async def archive_and_purge(bot: Bot, giveaway_id: str) -> bool:
             async with aiosqlite.connect(get_sqlite_path()) as conn:
                 await conn.execute(
                     """CREATE TABLE IF NOT EXISTS giveaway_archive_refs (
-                        giveaway_id TEXT PRIMARY KEY,
-                        file_id     TEXT,
-                        title       TEXT,
-                        creator_id  INTEGER,
-                        created_at  TEXT,
-                        end_date    TEXT,
-                        total_votes INTEGER DEFAULT 0,
-                        archived_at TEXT
+                        giveaway_id  TEXT PRIMARY KEY,
+                        file_id      TEXT,
+                        title        TEXT,
+                        creator_id   INTEGER,
+                        created_at   TEXT,
+                        end_date     TEXT,
+                        total_votes  INTEGER DEFAULT 0,
+                        archived_at  TEXT,
+                        channel      TEXT,
+                        member_start INTEGER DEFAULT 0,
+                        member_final INTEGER DEFAULT 0,
+                        member_gained INTEGER DEFAULT 0,
+                        winner       TEXT
                     )"""
                 )
                 await conn.execute(
                     """INSERT OR REPLACE INTO giveaway_archive_refs
-                       (giveaway_id, file_id, title, creator_id, created_at, end_date, total_votes, archived_at)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                       (giveaway_id, file_id, title, creator_id, created_at, end_date,
+                        total_votes, archived_at, channel, member_start, member_final,
+                        member_gained, winner)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (giveaway_id, file_id, title, creator_id,
-                     created_at, end_date, total_v, archived_at)
+                     created_at, end_date, total_v, archived_at,
+                     member_stats.get("channel_username",""),
+                     member_stats.get("member_start", 0),
+                     member_stats.get("member_final", 0),
+                     member_stats.get("member_gained", 0),
+                     votes_summary[0]["option"] if votes_summary else "")
                 )
                 await conn.commit()
     except asyncio.TimeoutError:
