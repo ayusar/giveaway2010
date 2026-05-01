@@ -28,5 +28,17 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Handle SUPERADMIN_IDS set as plain number or comma-separated string
+        # e.g. "8420494874" or "123,456" instead of "[8420494874]"
+        raw = os.environ.get("SUPERADMIN_IDS", "")
+        if raw and not raw.strip().startswith("["):
+            try:
+                ids = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                object.__setattr__(self, "SUPERADMIN_IDS", ids)
+            except ValueError:
+                pass
+
 
 settings = Settings()
