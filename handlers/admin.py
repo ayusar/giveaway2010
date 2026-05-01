@@ -16,6 +16,9 @@ def _hash_pw(pw: str) -> str:
 
 
 def is_superadmin(user_id: int) -> bool:
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.warning(f"[SUPERADMIN CHECK] user_id={user_id} SUPERADMIN_IDS={settings.SUPERADMIN_IDS} result={user_id in settings.SUPERADMIN_IDS}")
     return user_id in settings.SUPERADMIN_IDS
 
 
@@ -86,6 +89,7 @@ async def remove_admin_user(message: Message):
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
     if not is_superadmin(message.from_user.id):
+        await message.answer(f"❌ Not superadmin. Your ID: {message.from_user.id} | Allowed: {settings.SUPERADMIN_IDS}")
         return
     mongo = is_mongo()
     if mongo:
