@@ -20,12 +20,13 @@ async def _fetch_member_count(channel_id: str) -> int:
     if not _bot:
         return 0
     try:
-        chat = await _bot.get_chat(channel_id)
-        count = getattr(chat, 'member_count', None)
-        if count is None:
-            count = await _bot.get_chat_member_count(channel_id)
+        # Use get_chat_member_count() directly — never use get_chat()
+        # because get_chat() crashes on channels with paid reactions
+        # in aiogram 3.7.0 (pydantic ValidationError on ReactionTypePaid)
+        count = await _bot.get_chat_member_count(channel_id)
         return count or 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"_fetch_member_count failed for {channel_id}: {e}")
         return 0
 
 
