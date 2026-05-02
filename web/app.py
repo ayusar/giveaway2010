@@ -86,7 +86,7 @@ async def _start_bot():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Bot is started by main.py — do NOT start it here to avoid conflict."""
+    """Bot is started by main.py — do NOT start here to avoid conflict."""
     yield
 
 
@@ -2050,8 +2050,9 @@ async def _check_prem_creds(username: str, password: str) -> bool:
             db = get_db()
             if db is None:
                 return False
+            import re as _re
             return bool(await db.premium_panel_users.find_one(
-                {"username": username, "password": hashed}
+                {"username": {"$regex": f"^{_re.escape(username)}$", "$options": "i"}, "password": hashed}
             ))
         import aiosqlite
         async with aiosqlite.connect(get_sqlite_path()) as conn:
@@ -2061,7 +2062,7 @@ async def _check_prem_creds(username: str, password: str) -> bool:
             )
             await conn.commit()
             async with conn.execute(
-                "SELECT id FROM premium_panel_users WHERE username=? AND password=?",
+                "SELECT id FROM premium_panel_users WHERE LOWER(username)=LOWER(?) AND password=?",
                 (username, hashed)
             ) as cur:
                 return await cur.fetchone() is not None
