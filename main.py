@@ -163,11 +163,11 @@ async def _start_bot():
                 importlib.import_module(mod_name)
 
         dp.include_router(sys.modules["handlers.start"].router)
-        dp.include_router(sys.modules["handlers.giveaway"].router)
-        dp.include_router(sys.modules["handlers.referral"].router)
         dp.include_router(sys.modules["handlers.admin"].router)
         dp.include_router(sys.modules["handlers.clone_bot"].router)
+        dp.include_router(sys.modules["handlers.referral"].router)
         dp.include_router(sys.modules["handlers.stats"].router)
+        dp.include_router(sys.modules["handlers.giveaway"].router)
 
         clone_manager = get_clone_manager()
         asyncio.create_task(clone_manager.start_all_clones())
