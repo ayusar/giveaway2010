@@ -16,9 +16,6 @@ def _hash_pw(pw: str) -> str:
 
 
 def is_superadmin(user_id: int) -> bool:
-    import logging
-    _log = logging.getLogger(__name__)
-    _log.warning(f"[SUPERADMIN CHECK] user_id={user_id} SUPERADMIN_IDS={settings.SUPERADMIN_IDS} result={user_id in settings.SUPERADMIN_IDS}")
     return user_id in settings.SUPERADMIN_IDS
 
 
@@ -89,7 +86,6 @@ async def remove_admin_user(message: Message):
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
     if not is_superadmin(message.from_user.id):
-        await message.answer(f"❌ Not superadmin. Your ID: {message.from_user.id} | Allowed: {settings.SUPERADMIN_IDS}")
         return
     mongo = is_mongo()
     if mongo:
@@ -312,7 +308,8 @@ async def cmd_extend_premium(message: Message):
     from datetime import timedelta
     import aiosqlite as _aiosqlite
 
-    now_dt = __import__("datetime").datetime.utcnow()
+    from datetime import timezone as _tz
+    now_dt = __import__("datetime").datetime.now(_tz.utc).replace(tzinfo=None)
 
     if _is_mongo():
         db = _get_db()
@@ -320,7 +317,7 @@ async def cmd_extend_premium(message: Message):
         if doc:
             try:
                 from datetime import datetime as _dt
-                curr = _dt.fromisoformat(str(doc["expires_at"]).replace("Z",""))
+                curr = _dt.fromisoformat(str(doc["expires_at"]).replace("Z","")).replace(tzinfo=None)
             except Exception:
                 curr = now_dt
         else:
@@ -379,6 +376,7 @@ async def cmd_extend_premium(message: Message):
 
 @router.message(Command("addpreuserpanel"))
 async def cmd_add_pre_user_panel(message: Message):
+    # Format: /addpreuserpanel <id>:<user>:<pass>:<days(optional)>
     """
     /addpreuserpanel <user_id>:<username>:<password>
     Grant premium + panel access in one command. Notifies user with beautiful message.
@@ -400,13 +398,20 @@ async def cmd_add_pre_user_panel(message: Message):
 
     raw = parts[1].strip()
     try:
-        first_colon  = raw.index(":")
-        second_colon = raw.index(":", first_colon + 1)
-        user_id_str  = raw[:first_colon]
-        username     = raw[first_colon + 1:second_colon]
-        password     = raw[second_colon + 1:]
-    except ValueError:
-        await message.answer("❌ Invalid format. Use: <code>user_id:username:password</code>", parse_mode="HTML")
+        segments = raw.split(":")
+        if len(segments) < 3:
+            raise ValueError
+        user_id_str = segments[0]
+        username    = segments[1]
+        password    = segments[2]
+        DAYS        = int(segments[3]) if len(segments) >= 4 and segments[3].isdigit() else 30
+    except (ValueError, IndexError):
+        await message.answer(
+            "❌ Invalid format.\n"
+            "Use: <code>/addpreuserpanel user_id:username:password</code>\n"
+            "Or with days: <code>/addpreuserpanel user_id:username:password:days</code>",
+            parse_mode="HTML"
+        )
         return
 
     if not user_id_str.lstrip("-").isdigit():
@@ -417,7 +422,6 @@ async def cmd_add_pre_user_panel(message: Message):
         return
 
     user_id = int(user_id_str)
-    DAYS = 30  # Default premium duration
 
     # 1. Grant premium
     from utils.premium import add_premium
@@ -510,6 +514,7 @@ async def cmd_add_pre_user_panel(message: Message):
 
 
 
+@router.message(Command("addpremium"))
 async def cmd_add_premium(message: Message):
     if not is_superadmin(message.from_user.id):
         return
@@ -835,4 +840,3 @@ async def list_prem_users(message: Message):
 
     except Exception as e:
         await message.answer(f"❌ Error: <code>{e}</code>", parse_mode="HTML")
-
