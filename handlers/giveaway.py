@@ -26,7 +26,6 @@ class GiveawayForm(StatesGroup):
     prizes         = State()
     options        = State()
     end_time       = State()
-    winner_dm      = State()   # ask creator if they want winner auto-DM
     confirm        = State()
 
 
@@ -44,14 +43,6 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✅ Post Giveaway", callback_data="giveaway_confirm:yes"),
             InlineKeyboardButton(text="❌ Cancel",        callback_data="giveaway_confirm:no"),
         ]
-    ])
-
-
-def _winner_dm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Yes, DM the winner",  callback_data="winnerdm:yes")],
-        [InlineKeyboardButton(text="❌ No, skip DM",         callback_data="winnerdm:no")],
-        [InlineKeyboardButton(text="🚫 Cancel",              callback_data="giveaway_cancel")],
     ])
 
 
@@ -139,19 +130,28 @@ async def form_channel_id(message: Message, state: FSMContext, bot: Bot):
         parse_mode="HTML",
     )
     from utils.channel_admin_check import verify_channel_admin
-    ok, err, chat_id, chat_title = await verify_channel_admin(bot, user_id, channel)
+    ok, err = await verify_channel_admin(bot, user_id, channel)
     try:
         await verifying_msg.delete()
     except Exception:
         pass
     if not ok:
         logger.warning(f"[GIVEAWAY] form_channel_id: admin check FAILED user={user_id} channel={channel}")
-        try:
-            await message.answer(err, reply_markup=_cancel_keyboard())
-        except Exception:
-            await message.answer("❌ Verification failed. Please try again.", reply_markup=_cancel_keyboard())
+        await message.answer(err, parse_mode="HTML", reply_markup=_cancel_keyboard())
         return
     logger.info(f"[GIVEAWAY] form_channel_id: admin check PASSED user={user_id} channel={channel}")
+    # ─────────────────────────────────────────────────────────────
+
+    # Resolve chat ID and title (already confirmed accessible above)
+    chat_id = channel
+    chat_title = channel
+    try:
+        chat = await bot.get_chat(channel)
+        chat_id = str(chat.id)
+        chat_title = chat.title or channel
+        logger.info(f"[GIVEAWAY] form_channel_id: resolved chat_id={chat_id} title={chat_title}")
+    except Exception as e:
+        logger.warning(f"[GIVEAWAY] form_channel_id: get_chat failed ({e}), using raw input as chat_id")
 
     await state.update_data(
         channel_id=chat_id,
@@ -161,10 +161,11 @@ async def form_channel_id(message: Message, state: FSMContext, bot: Bot):
     await state.set_state(GiveawayForm.title)
     logger.info(f"[GIVEAWAY] form_channel_id: proceeding to title state for user={user_id}")
     await message.answer(
-        f"✅ Channel verified! {chat_title}\n\n"
-        "Step 2 of 5 — Giveaway Title\n\n"
+        f"✅ <b>Channel verified!</b> <code>{chat_title}</code>\n\n"
+        "<b>Step 2 of 5 — Giveaway Title</b>\n\n"
         "Enter the title for your giveaway:\n"
-        "Example: iPhone 15 Giveaway",
+        "Example: <code>iPhone 15 Giveaway</code>",
+        parse_mode="HTML",
         reply_markup=_cancel_keyboard(),
     )
 
@@ -250,15 +251,7 @@ async def handle_endtime_choice(callback: CallbackQuery, state: FSMContext):
             reply_markup=_cancel_keyboard(),
         )
         return
-    # Ask about winner DM
-    await state.set_state(GiveawayForm.winner_dm)
-    await callback.message.answer(
-        "🎉 <b>Winner Auto-DM</b>\n\n"
-        "Should the bot automatically DM the top-voted winner "
-        "when this giveaway ends?",
-        parse_mode="HTML",
-        reply_markup=_winner_dm_keyboard(),
-    )
+    await _show_preview(callback.message, state)
 
 
 @router.message(GiveawayForm.end_time)
@@ -272,23 +265,9 @@ async def form_end_time(message: Message, state: FSMContext):
         )
         return
     await state.update_data(end_time=end_time)
-    # Ask about winner DM
-    await state.set_state(GiveawayForm.winner_dm)
-    await message.answer(
-        "🎉 <b>Winner Auto-DM</b>\n\n"
-        "Should the bot automatically DM the top-voted winner "
-        "when this giveaway ends?",
-        parse_mode="HTML",
-        reply_markup=_winner_dm_keyboard(),
-    )
+    await _show_preview(message, state)
 
 
-@router.callback_query(F.data.startswith("winnerdm:"))
-async def handle_winner_dm_choice(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    allow = callback.data.split(":")[1] == "yes"
-    await state.update_data(allow_winner_dm=allow)
-    await _show_preview(callback.message, state)
 
 
 async def _show_preview(msg: Message, state: FSMContext):
@@ -345,7 +324,6 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
         prizes=data["prizes"],
         options=data["options"],
         end_time=data.get("end_time"),
-        allow_winner_dm=data.get("allow_winner_dm", False),
     )
 
     _creator_premium = await is_premium(callback.from_user.id)
@@ -414,13 +392,9 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
         tg_share_url = f"https://t.me/share/url?url={share_url}&text=Join+this+giveaway+and+vote+now!"
 
-        dm_status = "✅ Winner will be auto-DM'd" if data.get("allow_winner_dm") else "❌ Winner DM disabled"
-
         await callback.message.edit_text(
             f"✅ <b>Giveaway posted successfully!</b>\n\n"
-            f"🆔 <b>ID:</b> <code>{giveaway['giveaway_id']}</code>\n"
-            f"🎉 <b>Winner DM:</b> {dm_status}\n\n"
-            f"📊 <b>Your Analytics Panel:</b>\n"
+            f"🆔 <b>ID:</b> <code>{giveaway['giveaway_id']}</code>\n"            f"📊 <b>Your Analytics Panel:</b>\n"
             f"<a href=\"{panel_url}\">{panel_url}</a>\n\n"
             f"To close the poll manually, tap below:",
             parse_mode="HTML",
@@ -476,8 +450,7 @@ async def _dm_winner_if_allowed(bot: Bot, giveaway: dict, votes: dict):
     Auto-DM the top-voted option winner if the giveaway creator allowed it.
     The winner must have voted so we can look up their user_id from the votes table.
     """
-    if not giveaway.get("allow_winner_dm", False):
-        return
+
     options = giveaway.get("options", [])
     total   = giveaway.get("total_votes", 0)
     if not options or total == 0:
@@ -1026,4 +999,219 @@ async def debug_unhandled(message: Message, state: FSMContext):
     logger.warning(
         f"[GIVEAWAY] UNHANDLED MESSAGE: user={message.from_user.id} "
         f"text={repr(message.text)} current_state={current}"
+    )
+
+
+# ─── /giveawayinfo <id> ────────────────────────────────────────
+@router.message(Command("giveawayinfo"))
+async def cmd_giveaway_info(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "❌ Usage: /giveawayinfo <code>&lt;giveaway_id&gt;</code>\n"
+            "Example: /giveawayinfo 9A31157D",
+            parse_mode="HTML"
+        )
+        return
+
+    giveaway_id = parts[1].upper()
+    user_id = message.from_user.id
+    giveaway = await get_giveaway(giveaway_id)
+
+    if not giveaway:
+        try:
+            from utils.db import get_db, is_mongo, get_sqlite_path
+            if is_mongo():
+                db = get_db()
+                ref = await db.giveaway_archive_refs.find_one({"giveaway_id": giveaway_id})
+                if ref:
+                    giveaway = ref
+                    giveaway["is_active"] = False
+                    giveaway["archived"] = True
+            else:
+                import aiosqlite
+                async with aiosqlite.connect(get_sqlite_path()) as conn:
+                    conn.row_factory = aiosqlite.Row
+                    async with conn.execute(
+                        "SELECT * FROM giveaway_archive_refs WHERE giveaway_id=?",
+                        (giveaway_id,)
+                    ) as cur:
+                        row = await cur.fetchone()
+                    if row:
+                        giveaway = dict(row)
+                        giveaway["is_active"] = False
+                        giveaway["archived"] = True
+        except Exception:
+            pass
+
+    if not giveaway:
+        await message.answer(
+            f"❌ Giveaway <code>{giveaway_id}</code> not found.",
+            parse_mode="HTML"
+        )
+        return
+
+    from handlers.admin import is_superadmin
+    if giveaway.get("creator_id") != user_id and not is_superadmin(user_id):
+        await message.answer("❌ You don't have access to this giveaway.")
+        return
+
+    status = "✅ Active" if giveaway.get("is_active") else ("📦 Archived" if giveaway.get("archived") else "🔒 Closed")
+    prizes = giveaway.get("prizes", [])
+    options = giveaway.get("options", [])
+    prizes_text = "\n".join([f"  {i+1}. {p}" for i, p in enumerate(prizes)]) if prizes else "  —"
+    options_text = "\n".join([f"  • {o}" for o in options]) if options else "  —"
+
+    await message.answer(
+        f"📊 <b>Giveaway Info</b>\n\n"
+        f"🆔 ID: <code>{giveaway_id}</code>\n"
+        f"📌 Title: <b>{giveaway.get('title', '—')}</b>\n"
+        f"📢 Channel: {giveaway.get('channel_username', '—')}\n"
+        f"🔘 Status: {status}\n"
+        f"👥 Total Votes: <b>{giveaway.get('total_votes', 0)}</b>\n"
+        f"📅 Created: {str(giveaway.get('created_at', '—'))[:10]}\n\n"
+        f"🏆 Prizes:\n{prizes_text}\n\n"
+        f"🗳 Options:\n{options_text}",
+        parse_mode="HTML"
+    )
+
+
+# ─── /duplicategiveaway <id> ───────────────────────────────────
+@router.message(Command("duplicategiveaway"))
+async def cmd_duplicate_giveaway(message: Message, state: FSMContext):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "❌ Usage: /duplicategiveaway <code>&lt;giveaway_id&gt;</code>\n"
+            "Example: /duplicategiveaway 9A31157D",
+            parse_mode="HTML"
+        )
+        return
+
+    giveaway_id = parts[1].upper()
+    user_id = message.from_user.id
+    giveaway = await get_giveaway(giveaway_id)
+
+    if not giveaway:
+        try:
+            from utils.db import get_db, is_mongo, get_sqlite_path
+            from config.settings import settings as _s
+            import json as _json
+
+            ref = None
+            if is_mongo():
+                db = get_db()
+                ref = await db.giveaway_archive_refs.find_one({"giveaway_id": giveaway_id})
+            else:
+                import aiosqlite
+                async with aiosqlite.connect(get_sqlite_path()) as conn:
+                    conn.row_factory = aiosqlite.Row
+                    async with conn.execute(
+                        "SELECT * FROM giveaway_archive_refs WHERE giveaway_id=?",
+                        (giveaway_id,)
+                    ) as cur:
+                        row = await cur.fetchone()
+                    if row:
+                        ref = dict(row)
+
+            if ref and ref.get("file_id") and getattr(_s, "DATABASE_CHANNEL", None):
+                file = await message.bot.get_file(ref["file_id"])
+                file_bytes = await message.bot.download_file(file.file_path)
+                data = _json.loads(file_bytes.read().decode())
+                giveaway = data.get("giveaway", data)
+        except Exception as e:
+            logger.warning(f"duplicategiveaway: archive fetch failed: {e}")
+
+    if not giveaway:
+        await message.answer(
+            f"❌ Giveaway <code>{giveaway_id}</code> not found.\n\n"
+            "Note: Archived giveaways require <code>DATABASE_CHANNEL</code> to be set.",
+            parse_mode="HTML"
+        )
+        return
+
+    from handlers.admin import is_superadmin
+    if giveaway.get("creator_id") != user_id and not is_superadmin(user_id):
+        await message.answer("❌ You can only duplicate your own giveaways.")
+        return
+
+    await state.set_state(GiveawayForm.channel)
+    await state.update_data(
+        prefill_title=giveaway.get("title", ""),
+        prefill_prizes=giveaway.get("prizes", []),
+        prefill_options=giveaway.get("options", []),
+        prefill_channel=giveaway.get("channel_username", ""),
+    )
+
+    await message.answer(
+        f"♻️ <b>Duplicate Giveaway</b>\n\n"
+        f"Loaded from <code>{giveaway_id}</code>:\n"
+        f"📌 Title: <b>{giveaway.get('title', '—')}</b>\n"
+        f"🏆 Prizes: <b>{len(giveaway.get('prizes', []))} prizes</b>\n"
+        f"🗳 Options: <b>{len(giveaway.get('options', []))} options</b>\n\n"
+        f"Now enter your channel username:\n"
+        f"Example: <code>@mychannel</code>",
+        parse_mode="HTML",
+        reply_markup=_cancel_keyboard()
+    )
+
+
+# ─── /mypremium ───────────────────────────────────────────────
+@router.message(Command("mypremium"))
+async def cmd_my_premium(message: Message):
+    user_id = message.from_user.id
+    try:
+        from utils.premium import get_premium
+        data = await get_premium(user_id)
+    except Exception:
+        data = None
+
+    if not data or not data.get("is_active"):
+        await message.answer(
+            "💎 <b>My Premium</b>\n\n"
+            "You don't have an active premium plan.\n\n"
+            "Tap <b>Buy Premium</b> in the main menu to upgrade!",
+            parse_mode="HTML"
+        )
+        return
+
+    from datetime import datetime
+    expires = data.get("expires_at")
+    if expires:
+        exp_str = str(expires)[:10]
+        try:
+            exp_dt = datetime.fromisoformat(str(expires).replace("Z", "")).replace(tzinfo=None)
+            days_left = (exp_dt - datetime.utcnow()).days
+        except Exception:
+            days_left = "?"
+    else:
+        exp_str = "Lifetime"
+        days_left = "∞"
+
+    await message.answer(
+        f"💎 <b>My Premium</b>\n\n"
+        f"✅ Status: <b>Active</b>\n"
+        f"📅 Expires: <b>{exp_str}</b>\n"
+        f"⏳ Days left: <b>{days_left}</b>\n\n"
+        f"Use /premiumbenefits to see what you get.",
+        parse_mode="HTML"
+    )
+
+
+# ─── /premiumbenefits ─────────────────────────────────────────
+@router.message(Command("premiumbenefits"))
+async def cmd_premium_benefits(message: Message):
+    await message.answer(
+        "💎 <b>Premium Benefits</b>\n\n"
+        "✦ <b>Unlimited giveaways</b> at once\n"
+        "✦ <b>No bot watermark</b> on your giveaways\n"
+        "✦ <b>Personal analytics dashboard</b>\n"
+        "✦ <b>Channel growth tracking</b>\n"
+        "✦ <b>Clone/Referral bot</b> access\n"
+        "✦ <b>Priority support</b>\n"
+        "✦ <b>Advanced stats</b> — votes, participants, top share\n"
+        "✦ <b>Winner announcement</b> customization\n\n"
+        "📌 Free users limited to <b>1 active giveaway</b> at a time.\n\n"
+        "Tap <b>Buy Premium</b> in the main menu to upgrade! 🚀",
+        parse_mode="HTML"
     )
