@@ -86,12 +86,8 @@ async def _start_bot():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Starts bot on FastAPI startup regardless of how uvicorn is invoked."""
-    global _bot_task
-    _bot_task = asyncio.create_task(_start_bot())
+    """Bot is started by main.py — do NOT start it here to avoid conflict."""
     yield
-    if _bot_task and not _bot_task.done():
-        _bot_task.cancel()
 
 
 app = FastAPI(docs_url=None, redoc_url=None, lifespan=lifespan)
