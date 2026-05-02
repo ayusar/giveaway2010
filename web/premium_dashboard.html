@@ -331,7 +331,10 @@ tr:hover td { background: #ffffff04; }
   .page-header { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
   .header-actions { width: 100%; }
   .header-actions .btn { flex: 1; justify-content: center; }
-  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; position:relative; }
+  .scroll-btns { display:flex; gap:8px; margin-bottom:8px; }
+  .scroll-btn { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:4px 14px; cursor:pointer; font-size:15px; color:var(--text); }
+  .scroll-btn:hover { background:var(--accent); color:#fff; }
   table { min-width: 520px; }
   .bot-grid { grid-template-columns: 1fr; }
   #toast { bottom: 80px; right: 16px; left: 16px; text-align: center; }
@@ -812,7 +815,9 @@ async function loadRecentGiveaways() {
       <td>${g.total_votes||0}</td>
       <td><span class="badge ${g.is_active?'badge-live':'badge-closed'}">${g.is_active?'Live':'Archived'}</span></td>
       <td style="color:var(--muted)">${(g.created_at||'').slice(0,10)}</td>
-      <td><button class="btn btn-ghost btn-sm">📊 Panel</button></td>
+      <td>${g.panel_token
+        ? `<a href="/panel/${g.panel_token}" target="_blank" class="btn btn-ghost btn-sm">📊 Panel</a>`
+        : '<span style="color:var(--muted);font-size:11px">No panel</span>'}</td>
     </tr>`).join('');
 }
 
@@ -847,8 +852,9 @@ function renderGiveaways(list) {
       <td><span class="badge ${g.is_active?'badge-live':'badge-closed'}">${g.is_active?'Live':'Archived'}</span></td>
       <td style="color:var(--muted)">${(g.created_at||'').slice(0,10)}</td>
       <td style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-ghost btn-sm">📊 Panel</button>
-        ${g.is_active ? '<button class="btn btn-danger btn-sm">⏹ Close</button>' : ''}
+        ${g.panel_token ? `<a href="/panel/${g.panel_token}" target="_blank" class="btn btn-ghost btn-sm">📊 Panel</a>` : ''}
+        ${g.is_active ? `<button class="btn btn-danger btn-sm" onclick="closeGiveaway('${g.giveaway_id||''}')">⏹ Close</button>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="viewParticipants('${g.giveaway_id||''}')">👥 Participants</button>
       </td>
     </tr>`).join('');
 }
@@ -926,6 +932,32 @@ function filterUsers(q) {
     String(u.user_id).includes(q)
   );
   renderUsers(filtered);
+}
+
+async function closeGiveaway(id) {
+  if (!id || !confirm('Close this giveaway?')) return;
+  const r = await fetch('/tg/premium/api/close_giveaway', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({giveaway_id: id})
+  });
+  const d = await r.json().catch(()=>({}));
+  toast(d.ok ? '✅ Giveaway closed!' : '❌ ' + (d.detail||'Failed'));
+  if (d.ok) loadGiveaways();
+}
+
+async function viewParticipants(id) {
+  if (!id) return;
+  const data = await apiFetch(`/tg/premium/api/participants/${id}`);
+  if (!data) return;
+  const list = data.participants || [];
+  const html = list.length
+    ? list.map((p,i) => `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between">
+        <span>${i+1}. ${esc(p.user_name||'Unknown')}</span>
+        <span style="color:var(--muted)">${p.vote_count||0} votes</span>
+      </div>`).join('')
+    : '<div style="color:var(--muted);padding:20px;text-align:center">No participants found</div>';
+  document.getElementById('modal-participants-body').innerHTML = html;
+  document.getElementById('modal-participants').classList.add('open');
 }
 
 // ══ Settings page ════════════════════════════════════════════════
