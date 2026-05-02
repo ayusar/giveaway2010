@@ -2210,7 +2210,32 @@ async def prem_api_clones(request: Request):
 async def prem_api_giveaways(request: Request):
     _rate_guard(request)
     _prem_guard(request)
-    return JSONResponse(await _build_giveaways())
+    data = await _build_giveaways()
+    try:
+        from utils.db import get_db, is_mongo, get_sqlite_path
+        gids = [g.get("giveaway_id") for g in data if g.get("giveaway_id")]
+        if gids:
+            if is_mongo():
+                db = get_db()
+                panels = await db.panels.find(
+                    {"ref_id": {"$in": gids}, "panel_type": "giveaway", "is_deleted": False},
+                    {"ref_id": 1, "token": 1}
+                ).to_list(None)
+                token_map = {p["ref_id"]: p["token"] for p in panels}
+            else:
+                import aiosqlite
+                placeholders = ",".join("?" * len(gids))
+                async with aiosqlite.connect(get_sqlite_path()) as conn:
+                    async with conn.execute(
+                        f"SELECT ref_id, token FROM panels WHERE ref_id IN ({placeholders}) AND panel_type='giveaway' AND is_deleted=0",
+                        gids
+                    ) as cur:
+                        token_map = {r[0]: r[1] for r in await cur.fetchall()}
+            for g in data:
+                g["panel_token"] = token_map.get(g.get("giveaway_id"))
+    except Exception as e:
+        logger.warning(f"prem_api_giveaways enrich error: {e}")
+    return JSONResponse(data)
 
 
 @app.get("/tg/premium/api/users")
@@ -2329,3 +2354,138 @@ async def remove_premium_panel_user(username: str) -> bool:
     except Exception as e:
         logger.error(f"remove_premium_panel_user error: {e}")
         return False
+
+
+# ── Premium broadcast ──────────────────────────────────────────
+@app.post("/tg/premium/api/broadcast")
+async def prem_api_broadcast(request: Request):
+    _rate_guard(request)
+    _prem_guard(request)
+    body = await request.json()
+    msg = body.get("message", "").strip()
+    if not msg:
+        raise HTTPException(400, detail="Message is empty")
+    from web.broadcaster import do_global_broadcast
+    asyncio.create_task(do_global_broadcast(msg))
+    return JSONResponse({"ok": True, "detail": "Broadcast started"})
+
+
+# ── Premium close giveaway ─────────────────────────────────────
+@app.post("/tg/premium/api/close_giveaway")
+async def prem_api_close_giveaway(request: Request):
+    _rate_guard(request)
+    _prem_guard(request)
+    body = await request.json()
+    giveaway_id = body.get("giveaway_id", "").strip().upper()
+    if not giveaway_id:
+        raise HTTPException(400, detail="giveaway_id required")
+    try:
+        from utils.db import get_db, is_mongo, get_sqlite_path
+        if is_mongo():
+            result = await get_db().giveaways.update_one(
+                {"giveaway_id": giveaway_id},
+                {"$set": {"is_active": False}}
+            )
+            ok = result.modified_count > 0
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                await conn.execute(
+                    "UPDATE giveaways SET is_active=0 WHERE giveaway_id=?",
+                    (giveaway_id,)
+                )
+                await conn.commit()
+            ok = True
+        return JSONResponse({"ok": ok})
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+# ── Premium participants ───────────────────────────────────────
+@app.get("/tg/premium/api/participants/{giveaway_id}")
+async def prem_api_participants(giveaway_id: str, request: Request):
+    _rate_guard(request)
+    _prem_guard(request)
+    giveaway_id = giveaway_id.upper()
+    participants = []
+    try:
+        from utils.db import get_db, is_mongo, get_sqlite_path
+        if is_mongo():
+            db = get_db()
+            votes = await db.votes.find(
+                {"giveaway_id": giveaway_id}
+            ).sort("vote_count", -1).to_list(None)
+            participants = [
+                {
+                    "user_name": v.get("user_name") or v.get("first_name") or "Unknown",
+                    "vote_count": v.get("vote_count", 1),
+                    "user_id": v.get("user_id"),
+                }
+                for v in votes
+            ]
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                conn.row_factory = aiosqlite.Row
+                try:
+                    async with conn.execute(
+                        "SELECT * FROM votes WHERE giveaway_id=? ORDER BY vote_count DESC",
+                        (giveaway_id,)
+                    ) as cur:
+                        rows = await cur.fetchall()
+                    participants = [
+                        {
+                            "user_name": r["user_name"] or "Unknown",
+                            "vote_count": r.get("vote_count", 1),
+                            "user_id": r["user_id"],
+                        }
+                        for r in rows
+                    ]
+                except Exception:
+                    participants = []
+
+        if not participants:
+            archived = await _fetch_archived_giveaway(giveaway_id)
+            if archived:
+                votes = archived.get("votes", [])
+                participants = [
+                    {
+                        "user_name": v.get("user_name") or "Unknown",
+                        "vote_count": v.get("vote_count", 1),
+                        "user_id": v.get("user_id"),
+                    }
+                    for v in votes
+                ]
+    except Exception as e:
+        logger.error(f"prem_participants error: {e}")
+    return JSONResponse({"participants": participants, "total": len(participants)})
+
+
+# ── Close poll from user panel ─────────────────────────────────
+@app.post("/panel/{token}/close")
+async def panel_close_poll(token: str, request: Request):
+    from models.panel import get_panel
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    panel = await get_panel(token)
+    if not panel:
+        raise HTTPException(404)
+    giveaway_id = panel.get("ref_id")
+    if not giveaway_id:
+        raise HTTPException(400, detail="No giveaway linked")
+    try:
+        if is_mongo():
+            await get_db().giveaways.update_one(
+                {"giveaway_id": giveaway_id},
+                {"$set": {"is_active": False}}
+            )
+        else:
+            import aiosqlite
+            async with aiosqlite.connect(get_sqlite_path()) as conn:
+                await conn.execute(
+                    "UPDATE giveaways SET is_active=0 WHERE giveaway_id=?",
+                    (giveaway_id,)
+                )
+                await conn.commit()
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
