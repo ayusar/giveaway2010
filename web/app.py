@@ -795,12 +795,12 @@ async def _build_giveaways():
 
 
 async def _build_giveaways_for_user(tg_id: int | None):
-    """Return giveaways filtered by creator_id (tg_id). Falls back to all giveaways if tg_id is None."""
+    """Return giveaways filtered by creator_id (tg_id). Returns empty list if tg_id is None."""
+    if tg_id is None:
+        return []
     from utils.db import get_db, is_mongo, get_sqlite_path
-    import json as _json
-    query_filter = {"creator_id": tg_id} if tg_id is not None else {}
     if is_mongo():
-        giveaways = await get_db().giveaways.find(query_filter).sort("created_at", -1).limit(100).to_list(None)
+        giveaways = await get_db().giveaways.find({"creator_id": tg_id}).sort("created_at", -1).limit(100).to_list(None)
         return [{"giveaway_id": g["giveaway_id"], "title": g["title"],
                  "channel_id": g.get("channel_id", ""), "total_votes": g.get("total_votes", 0),
                  "is_active": g.get("is_active", False), "created_at": str(g.get("created_at", ""))[:10]}
@@ -808,21 +808,274 @@ async def _build_giveaways_for_user(tg_id: int | None):
     import aiosqlite
     async with aiosqlite.connect(get_sqlite_path()) as conn:
         conn.row_factory = aiosqlite.Row
-        if tg_id is not None:
-            async with conn.execute(
-                "SELECT * FROM giveaways WHERE creator_id=? ORDER BY created_at DESC LIMIT 100",
-                (tg_id,)
-            ) as cur:
-                rows = await cur.fetchall()
-        else:
-            async with conn.execute(
-                "SELECT * FROM giveaways ORDER BY created_at DESC LIMIT 100"
-            ) as cur:
-                rows = await cur.fetchall()
+        async with conn.execute(
+            "SELECT * FROM giveaways WHERE creator_id=? ORDER BY created_at DESC LIMIT 100",
+            (tg_id,)
+        ) as cur:
+            rows = await cur.fetchall()
     return [{"giveaway_id": d["giveaway_id"], "title": d["title"],
              "channel_id": d.get("channel_id", ""), "total_votes": d["total_votes"],
              "is_active": bool(d["is_active"]), "created_at": str(d.get("created_at", ""))[:10]}
             for d in [dict(r) for r in rows]]
+
+
+async def _build_clones_for_user(tg_id: int | None):
+    """Return clone bots owned by tg_id only."""
+    if tg_id is None:
+        return []
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    if is_mongo():
+        db = get_db()
+        clones = await db.clone_bots.find({"owner_id": tg_id}).sort("created_at", -1).limit(100).to_list(None)
+        result = []
+        for c in clones:
+            uc = await db.referrals.count_documents({"clone_token": c["token"]})
+            result.append({
+                "bot_username": c.get("bot_username", "?"),
+                "owner_id": c.get("owner_id"),
+                "is_active": c.get("is_active", False),
+                "is_banned": c.get("is_banned", False),
+                "user_count": uc,
+                "channel": c.get("channel_link", "—"),
+                "token": c["token"],
+                "token_preview": c["token"][:12] + "...",
+                "created_at": str(c.get("created_at", ""))[:10],
+            })
+        return result
+    import aiosqlite
+    async with aiosqlite.connect(get_sqlite_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            "SELECT * FROM clone_bots WHERE owner_id=? ORDER BY created_at DESC LIMIT 100", (tg_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            async with conn.execute(
+                "SELECT COUNT(*) FROM referrals WHERE clone_token=?", (d["token"],)
+            ) as c2:
+                uc = (await c2.fetchone())[0]
+            result.append({
+                "bot_username": d.get("bot_username", "?"),
+                "owner_id": d.get("owner_id"),
+                "is_active": bool(d.get("is_active")),
+                "is_banned": bool(d.get("is_banned")),
+                "user_count": uc,
+                "channel": d.get("channel_link", "—"),
+                "token": d["token"],
+                "token_preview": d["token"][:12] + "...",
+                "created_at": str(d.get("created_at", ""))[:10],
+            })
+    return result
+
+
+async def _build_stats_for_user(tg_id: int | None):
+    """Return stats scoped to tg_id's own clones/giveaways."""
+    if tg_id is None:
+        return {}
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    uptime_s = int(time.time() - _start_time)
+    h, r = divmod(uptime_s, 3600); m, s = divmod(r, 60)
+    uptime = f"{h}h {m}m {s}s"
+    if is_mongo():
+        db = get_db()
+        total_clones    = await db.clone_bots.count_documents({"owner_id": tg_id, "is_active": True})
+        total_giveaways = await db.giveaways.count_documents({"creator_id": tg_id})
+        active_polls    = await db.giveaways.count_documents({"creator_id": tg_id, "is_active": True})
+        total_votes     = 0
+        async for g in db.giveaways.find({"creator_id": tg_id}, {"total_votes": 1}):
+            total_votes += g.get("total_votes", 0)
+        banned_clones   = await db.clone_bots.count_documents({"owner_id": tg_id, "is_banned": True})
+        # Count users across this user's clone bots only
+        user_tokens = [c["token"] async for c in db.clone_bots.find({"owner_id": tg_id}, {"token": 1})]
+        total_users = await db.referrals.count_documents({"clone_token": {"$in": user_tokens}}) if user_tokens else 0
+        total_panels = await db.panels.count_documents({"owner_id": tg_id, "is_deleted": False})
+        since = datetime.utcnow() - timedelta(days=7)
+        pipeline = [
+            {"$match": {"clone_token": {"$in": user_tokens}, "joined_at": {"$gte": since}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$joined_at"}}, "count": {"$sum": 1}}},
+            {"$sort": {"_id": 1}}
+        ]
+        daily_raw = await db.referrals.aggregate(pipeline).to_list(length=None) if user_tokens else []
+        pipeline2 = [
+            {"$match": {"creator_id": tg_id, "created_at": {"$gte": since}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}}, "count": {"$sum": 1}}},
+            {"$sort": {"_id": 1}}
+        ]
+        usage_raw = await db.giveaways.aggregate(pipeline2).to_list(length=None)
+    else:
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            async def cnt(q, p=()):
+                async with conn.execute(q, p) as c: return (await c.fetchone())[0]
+            total_clones    = await cnt("SELECT COUNT(*) FROM clone_bots WHERE owner_id=? AND is_active=1", (tg_id,))
+            total_giveaways = await cnt("SELECT COUNT(*) FROM giveaways WHERE creator_id=?", (tg_id,))
+            active_polls    = await cnt("SELECT COUNT(*) FROM giveaways WHERE creator_id=? AND is_active=1", (tg_id,))
+            total_votes     = await cnt("SELECT COALESCE(SUM(total_votes),0) FROM giveaways WHERE creator_id=?", (tg_id,))
+            banned_clones   = await cnt("SELECT COUNT(*) FROM clone_bots WHERE owner_id=? AND is_banned=1", (tg_id,))
+            # Users across this user's bots
+            async with conn.execute("SELECT token FROM clone_bots WHERE owner_id=?", (tg_id,)) as cur:
+                tokens = [r[0] for r in await cur.fetchall()]
+            if tokens:
+                placeholders = ",".join("?" * len(tokens))
+                total_users = await cnt(f"SELECT COUNT(*) FROM referrals WHERE clone_token IN ({placeholders})", tokens)
+            else:
+                total_users = 0
+            try:
+                total_panels = await cnt("SELECT COUNT(*) FROM panels WHERE owner_id=? AND is_deleted=0", (tg_id,))
+            except Exception:
+                total_panels = 0
+            since_str = (datetime.utcnow() - timedelta(days=7)).isoformat()
+            if tokens:
+                placeholders = ",".join("?" * len(tokens))
+                async with conn.execute(
+                    f"SELECT substr(joined_at,1,10) d, COUNT(*) c FROM referrals "
+                    f"WHERE clone_token IN ({placeholders}) AND joined_at>=? GROUP BY d ORDER BY d",
+                    tokens + [since_str]
+                ) as cur:
+                    daily_raw = [{"_id": r[0], "count": r[1]} for r in await cur.fetchall()]
+            else:
+                daily_raw = []
+            async with conn.execute(
+                "SELECT substr(created_at,1,10) d, COUNT(*) c FROM giveaways "
+                "WHERE creator_id=? AND created_at>=? GROUP BY d ORDER BY d", (tg_id, since_str)
+            ) as cur:
+                usage_raw = [{"_id": r[0], "count": r[1]} for r in await cur.fetchall()]
+
+    daily_labels, daily_counts, usage_counts = [], [], []
+    day_map   = {d["_id"]: d["count"] for d in daily_raw}
+    usage_map = {d["_id"]: d["count"] for d in usage_raw}
+    for i in range(6, -1, -1):
+        day = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
+        daily_labels.append(day[5:])
+        daily_counts.append(day_map.get(day, 0))
+        usage_counts.append(usage_map.get(day, 0))
+
+    return {
+        "uptime": uptime, "total_clones": total_clones, "total_users": total_users,
+        "total_giveaways": total_giveaways, "active_polls": active_polls,
+        "total_votes": total_votes, "banned_clones": banned_clones,
+        "total_panels": total_panels,
+        "daily_labels": daily_labels, "daily_counts": daily_counts,
+        "usage_counts": usage_counts,
+    }
+
+
+async def _build_users_for_user(tg_id: int | None, page: int = 1, search: str = "") -> dict:
+    """Return users who joined this user's clone bots only."""
+    if tg_id is None:
+        return {"users": [], "total": 0, "page": page, "pages": 0}
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    per_page = 50
+    offset   = (page - 1) * per_page
+    if is_mongo():
+        db = get_db()
+        user_tokens = [c["token"] async for c in db.clone_bots.find({"owner_id": tg_id}, {"token": 1})]
+        if not user_tokens:
+            return {"users": [], "total": 0, "page": page, "pages": 0}
+        query = {"clone_token": {"$in": user_tokens}}
+        if search:
+            query["$and"] = [{"clone_token": {"$in": user_tokens}}, {"$or": [
+                {"first_name": {"$regex": search, "$options": "i"}},
+                {"username":   {"$regex": search, "$options": "i"}},
+                {"user_id":    int(search) if search.isdigit() else -1},
+            ]}]
+        total = await db.referrals.count_documents(query)
+        users = await db.referrals.find(query).sort("joined_at", -1).skip(offset).limit(per_page).to_list(None)
+        return {
+            "users": [{"user_id": u.get("user_id"), "first_name": u.get("first_name", ""),
+                       "username": u.get("username", ""), "joined_at": str(u.get("joined_at", ""))[:10],
+                       "refer_count": u.get("refer_count", 0)} for u in users],
+            "total": total, "page": page, "pages": max(1, (total + per_page - 1) // per_page),
+        }
+    import aiosqlite
+    async with aiosqlite.connect(get_sqlite_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute("SELECT token FROM clone_bots WHERE owner_id=?", (tg_id,)) as cur:
+            tokens = [r[0] for r in await cur.fetchall()]
+        if not tokens:
+            return {"users": [], "total": 0, "page": page, "pages": 0}
+        placeholders = ",".join("?" * len(tokens))
+        if search:
+            search_params = tokens + [f"%{search}%", f"%{search}%"] + ([int(search)] if search.isdigit() else [-1]) + [per_page, offset]
+            async with conn.execute(
+                f"SELECT * FROM referrals WHERE clone_token IN ({placeholders}) "
+                f"AND (first_name LIKE ? OR username LIKE ? OR user_id=?) "
+                f"ORDER BY joined_at DESC LIMIT ? OFFSET ?", search_params
+            ) as cur:
+                rows = await cur.fetchall()
+            async with conn.execute(
+                f"SELECT COUNT(*) FROM referrals WHERE clone_token IN ({placeholders}) "
+                f"AND (first_name LIKE ? OR username LIKE ? OR user_id=?)",
+                tokens + [f"%{search}%", f"%{search}%"] + ([int(search)] if search.isdigit() else [-1])
+            ) as cur:
+                total = (await cur.fetchone())[0]
+        else:
+            async with conn.execute(
+                f"SELECT * FROM referrals WHERE clone_token IN ({placeholders}) ORDER BY joined_at DESC LIMIT ? OFFSET ?",
+                tokens + [per_page, offset]
+            ) as cur:
+                rows = await cur.fetchall()
+            async with conn.execute(
+                f"SELECT COUNT(*) FROM referrals WHERE clone_token IN ({placeholders})", tokens
+            ) as cur:
+                total = (await cur.fetchone())[0]
+    return {
+        "users": [{"user_id": r["user_id"], "first_name": r["first_name"] or "",
+                   "username": r["username"] or "", "joined_at": str(r["joined_at"] or "")[:10],
+                   "refer_count": r["refer_count"] or 0} for r in rows],
+        "total": total, "page": page, "pages": max(1, (total + per_page - 1) // per_page),
+    }
+
+
+async def _build_panels_for_user(tg_id: int | None):
+    """Return panels owned by tg_id only."""
+    if tg_id is None:
+        return []
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    if is_mongo():
+        db = get_db()
+        panels = await db.panels.find({"owner_id": tg_id, "is_deleted": False}).sort("created_at", -1).limit(200).to_list(None)
+        live_ids = set()
+        giveaway_panels = [p for p in panels if p.get("panel_type") == "giveaway"]
+        if giveaway_panels:
+            ref_ids = [p["ref_id"] for p in giveaway_panels]
+            live_docs = await db.giveaways.find({"giveaway_id": {"$in": ref_ids}}, {"giveaway_id": 1}).to_list(None)
+            live_ids = {d["giveaway_id"] for d in live_docs}
+        result = []
+        for p in panels:
+            if p.get("panel_type") == "giveaway" and p["ref_id"] not in live_ids:
+                continue
+            result.append({"token": p["token"], "panel_type": p["panel_type"],
+                           "channel_title": p.get("channel_title", ""),
+                           "channel_username": p.get("channel_username", ""),
+                           "created_at": str(p.get("created_at", ""))[:10]})
+        result.sort(key=lambda x: x["created_at"], reverse=True)
+        return result[:100]
+    import aiosqlite
+    async with aiosqlite.connect(get_sqlite_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        try:
+            async with conn.execute(
+                "SELECT * FROM panels WHERE owner_id=? AND is_deleted=0 ORDER BY created_at DESC LIMIT 200", (tg_id,)
+            ) as cur:
+                rows = await cur.fetchall()
+            result = []
+            for d in [dict(r) for r in rows]:
+                if d.get("panel_type") == "giveaway":
+                    async with conn.execute(
+                        "SELECT giveaway_id FROM giveaways WHERE giveaway_id=?", (d["ref_id"],)
+                    ) as cur2:
+                        if not await cur2.fetchone():
+                            continue
+                result.append({"token": d["token"], "panel_type": d["panel_type"],
+                               "channel_title": d.get("channel_title", ""),
+                               "channel_username": d.get("channel_username", ""),
+                               "created_at": str(d.get("created_at", ""))[:10]})
+            return result
+        except Exception:
+            return []
 
 
 async def _build_panels():
@@ -2264,14 +2517,16 @@ def _prem_guard(request: Request):
 async def prem_api_stats(request: Request):
     _rate_guard(request)
     _prem_guard(request)
-    return JSONResponse(await _build_stats())
+    tg_id = _get_prem_tg_id(_get_prem_token(request))
+    return JSONResponse(await _build_stats_for_user(tg_id))
 
 
 @app.get("/tg/premium/api/clones")
 async def prem_api_clones(request: Request):
     _rate_guard(request)
     _prem_guard(request)
-    return JSONResponse(await _build_clones())
+    tg_id = _get_prem_tg_id(_get_prem_token(request))
+    return JSONResponse(await _build_clones_for_user(tg_id))
 
 
 @app.get("/tg/premium/api/giveaways")
@@ -2286,7 +2541,8 @@ async def prem_api_giveaways(request: Request):
 async def prem_api_users(request: Request, page: int = 1, search: str = ""):
     _rate_guard(request)
     _prem_guard(request)
-    return JSONResponse(await _build_users(page=page, search=search))
+    tg_id = _get_prem_tg_id(_get_prem_token(request))
+    return JSONResponse(await _build_users_for_user(tg_id, page=page, search=search))
 
 
 @app.get("/tg/premium/api/live_users")
@@ -2311,11 +2567,16 @@ async def prem_api_live_users(request: Request):
 async def prem_api_clone_users(token: str, request: Request):
     _rate_guard(request)
     _prem_guard(request)
+    tg_id = _get_prem_tg_id(_get_prem_token(request))
     from utils.db import get_db, is_mongo, get_sqlite_path
     users = []
     try:
+        # Verify this clone bot belongs to the logged-in user
         if is_mongo():
             db = get_db()
+            clone = await db.clone_bots.find_one({"token": token, "owner_id": tg_id})
+            if not clone:
+                raise HTTPException(403, detail="Access denied")
             docs = await db.referrals.find({"clone_token": token}).sort("refer_count", -1).to_list(None)
             users = [{"user_id": d.get("user_id"), "user_name": d.get("user_name") or "—",
                       "refer_count": d.get("refer_count", 0), "joined_at": str(d.get("joined_at", ""))[:10]}
@@ -2325,6 +2586,11 @@ async def prem_api_clone_users(token: str, request: Request):
             async with aiosqlite.connect(get_sqlite_path()) as conn:
                 conn.row_factory = aiosqlite.Row
                 async with conn.execute(
+                    "SELECT token FROM clone_bots WHERE token=? AND owner_id=?", (token, tg_id)
+                ) as cur:
+                    if not await cur.fetchone():
+                        raise HTTPException(403, detail="Access denied")
+                async with conn.execute(
                     "SELECT user_id, user_name, refer_count, joined_at FROM referrals "
                     "WHERE clone_token=? ORDER BY refer_count DESC", (token,)
                 ) as cur:
@@ -2332,6 +2598,8 @@ async def prem_api_clone_users(token: str, request: Request):
             users = [{"user_id": r["user_id"], "user_name": r["user_name"] or "—",
                       "refer_count": r["refer_count"] or 0, "joined_at": str(r["joined_at"] or "")[:10]}
                      for r in rows]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"prem clone_users error: {e}")
         raise HTTPException(500, detail=str(e))
@@ -2342,7 +2610,8 @@ async def prem_api_clone_users(token: str, request: Request):
 async def prem_api_panels(request: Request):
     _rate_guard(request)
     _prem_guard(request)
-    return JSONResponse(await _build_panels())
+    tg_id = _get_prem_tg_id(_get_prem_token(request))
+    return JSONResponse(await _build_panels_for_user(tg_id))
 
 
 # ── Add premium panel user (called from Telegram bot admin command) ──
