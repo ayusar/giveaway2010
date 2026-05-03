@@ -167,7 +167,23 @@ try {
   <!-- Error placeholder — injected by server -->
   __ERROR_BLOCK__
 
-  <form method="POST" action="/tg/premium/login">
+  <!-- Telegram Login Button (shown only inside Telegram) -->
+  <div id="tg-section" style="display:none;margin-bottom:20px">
+    <button type="button" id="tg-btn" onclick="tgLogin()" style="
+      width:100%;padding:14px;border-radius:12px;border:none;cursor:pointer;
+      background:linear-gradient(135deg,#2aabee,#229ed9);
+      color:#fff;font-size:15px;font-weight:700;font-family:inherit;
+      display:flex;align-items:center;justify-content:center;gap:10px;
+      box-shadow:0 4px 20px rgba(42,171,238,.3);transition:opacity .2s">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+        <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.247-2.032 9.571c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.895.65z"/>
+      </svg>
+      Continue with Telegram
+    </button>
+    <div style="text-align:center;margin:16px 0;color:#5a5880;font-size:12px;letter-spacing:.04em">— or sign in with password —</div>
+  </div>
+
+  <form method="POST" action="/tg/premium/login" id="login-form">
     <label>Username</label>
     <div class="input-wrap">
       <span class="input-icon">👤</span>
@@ -188,6 +204,67 @@ try {
     Access is restricted to <strong>premium users only</strong>.<br>
     Ask your admin to run <code style="background:#111;padding:2px 6px;border-radius:4px;font-size:11px">/addpreuser id:username:password</code>
   </p>
+
+<script>
+(function(){
+  try {
+    if (!window.Telegram || !Telegram.WebApp || !Telegram.WebApp.initData) return;
+    Telegram.WebApp.ready();
+    Telegram.WebApp.expand();
+    document.getElementById('tg-section').style.display = 'block';
+    // Auto-attempt login if opened from Telegram
+    const u = Telegram.WebApp.initDataUnsafe && Telegram.WebApp.initDataUnsafe.user;
+    if (u && u.id) autoTgLogin();
+  } catch(e){}
+})();
+
+async function autoTgLogin() {
+  try {
+    const r = await fetch('/tg/premium/tg_auth', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({init_data: Telegram.WebApp.initData})
+    });
+    const d = await r.json();
+    if (d.ok) window.location.href = '/tg/premium/dashboard';
+  } catch(e){}
+}
+
+async function tgLogin() {
+  const btn = document.getElementById('tg-btn');
+  btn.style.opacity = '0.7';
+  btn.disabled = true;
+  btn.textContent = 'Authenticating...';
+  try {
+    if (!Telegram.WebApp.initData) {
+      alert('Could not get Telegram data. Please open from Telegram.');
+      resetBtn(); return;
+    }
+    const r = await fetch('/tg/premium/tg_auth', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({init_data: Telegram.WebApp.initData})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      window.location.href = '/tg/premium/dashboard';
+    } else {
+      alert(d.detail || 'Not authorized. Ask admin to grant you premium access with /addpreuser.');
+      resetBtn();
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+    resetBtn();
+  }
+}
+
+function resetBtn() {
+  const btn = document.getElementById('tg-btn');
+  btn.style.opacity = '1';
+  btn.disabled = false;
+  btn.innerHTML = \`<svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.247-2.032 9.571c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.895.65z"/></svg> Continue with Telegram\`;
+}
+</script>
 </div>
 
 </body>
