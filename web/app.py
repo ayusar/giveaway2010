@@ -794,6 +794,37 @@ async def _build_giveaways():
             for d in [dict(r) for r in rows]]
 
 
+async def _build_giveaways_for_user(tg_id: int | None):
+    """Return giveaways filtered by creator_id (tg_id). Falls back to all giveaways if tg_id is None."""
+    from utils.db import get_db, is_mongo, get_sqlite_path
+    import json as _json
+    query_filter = {"creator_id": tg_id} if tg_id is not None else {}
+    if is_mongo():
+        giveaways = await get_db().giveaways.find(query_filter).sort("created_at", -1).limit(100).to_list(None)
+        return [{"giveaway_id": g["giveaway_id"], "title": g["title"],
+                 "channel_id": g.get("channel_id", ""), "total_votes": g.get("total_votes", 0),
+                 "is_active": g.get("is_active", False), "created_at": str(g.get("created_at", ""))[:10]}
+                for g in giveaways]
+    import aiosqlite
+    async with aiosqlite.connect(get_sqlite_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        if tg_id is not None:
+            async with conn.execute(
+                "SELECT * FROM giveaways WHERE creator_id=? ORDER BY created_at DESC LIMIT 100",
+                (tg_id,)
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with conn.execute(
+                "SELECT * FROM giveaways ORDER BY created_at DESC LIMIT 100"
+            ) as cur:
+                rows = await cur.fetchall()
+    return [{"giveaway_id": d["giveaway_id"], "title": d["title"],
+             "channel_id": d.get("channel_id", ""), "total_votes": d["total_votes"],
+             "is_active": bool(d["is_active"]), "created_at": str(d.get("created_at", ""))[:10]}
+            for d in [dict(r) for r in rows]]
+
+
 async def _build_panels():
     from utils.db import get_db, is_mongo, get_sqlite_path
     if is_mongo():
@@ -2020,7 +2051,7 @@ import hashlib as _hashlib
 import secrets as _secrets
 import time as _time_prem
 
-_prem_sessions: dict = {}          # token → expiry
+_prem_sessions: dict = {}          # token → {"expiry": float, "tg_id": int}
 _PREM_SESSION_TTL = 28800          # 8 hours
 
 
@@ -2035,10 +2066,22 @@ def _get_prem_token(request: Request) -> str | None:
 def _is_prem_auth(token: str | None) -> bool:
     if not token or token not in _prem_sessions:
         return False
-    if _prem_sessions[token] < _time_prem.time():
+    session = _prem_sessions[token]
+    expiry = session["expiry"] if isinstance(session, dict) else session
+    if expiry < _time_prem.time():
         del _prem_sessions[token]
         return False
     return True
+
+
+def _get_prem_tg_id(token: str | None) -> int | None:
+    """Return the tg_id stored in the premium session, or None."""
+    if not token or token not in _prem_sessions:
+        return None
+    session = _prem_sessions.get(token)
+    if isinstance(session, dict):
+        return session.get("tg_id")
+    return None
 
 
 async def _check_prem_creds(username: str, password: str) -> bool:
@@ -2147,7 +2190,12 @@ async def prem_login_post(request: Request):
         password = form.get("password", "")
         if await _check_prem_creds(username, password):
             tok = _secrets.token_hex(32)
-            _prem_sessions[tok] = _time_prem.time() + _PREM_SESSION_TTL
+            # Look up tg_id so we can filter giveaways by owner later
+            _prem_user_tg_id = await _get_prem_user_tg_id(username)
+            _prem_sessions[tok] = {
+                "expiry": _time_prem.time() + _PREM_SESSION_TTL,
+                "tg_id": _prem_user_tg_id,
+            }
             r = RedirectResponse(url="/tg/premium/user/tg/security", status_code=302)
             r.set_cookie("prem_session", tok, httponly=True, max_age=_PREM_SESSION_TTL, samesite="lax")
             return r
@@ -2165,6 +2213,26 @@ async def prem_logout(request: Request):
     r = RedirectResponse(url="/tg/premium/login", status_code=302)
     r.delete_cookie("prem_session")
     return r
+
+
+async def _get_prem_user_tg_id(username: str) -> int | None:
+    """Look up tg_id for a premium panel user by username."""
+    try:
+        from utils.db import get_db, is_mongo, get_sqlite_path
+        if is_mongo():
+            db = get_db()
+            doc = await db.premium_panel_users.find_one({"username": username}, {"tg_id": 1})
+            return doc.get("tg_id") if doc else None
+        import aiosqlite
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            async with conn.execute(
+                "SELECT tg_id FROM premium_panel_users WHERE username=?", (username,)
+            ) as cur:
+                row = await cur.fetchone()
+            return row[0] if row else None
+    except Exception as e:
+        logger.error(f"_get_prem_user_tg_id error: {e}")
+        return None
 
 
 # ── Main dashboard (the Mini App entry point) ──────────────────
@@ -2210,7 +2278,8 @@ async def prem_api_clones(request: Request):
 async def prem_api_giveaways(request: Request):
     _rate_guard(request)
     _prem_guard(request)
-    return JSONResponse(await _build_giveaways())
+    tg_id = _get_prem_tg_id(_get_prem_token(request))
+    return JSONResponse(await _build_giveaways_for_user(tg_id))
 
 
 @app.get("/tg/premium/api/users")
@@ -2406,8 +2475,12 @@ async def prem_tg_auth(request: Request):
         httponly=True, samesite="lax",
         max_age=60 * 60 * 24 * 7  # 7 days
     )
-    # Store valid token in memory for session check
+    # Store session with tg_id so giveaway filtering works correctly
     _prem_valid_tokens.add(token)
+    _prem_sessions[token] = {
+        "expiry": _time_prem.time() + 60 * 60 * 24 * 7,
+        "tg_id": tg_id,
+    }
     return r
 
 
