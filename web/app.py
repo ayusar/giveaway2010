@@ -2210,32 +2210,7 @@ async def prem_api_clones(request: Request):
 async def prem_api_giveaways(request: Request):
     _rate_guard(request)
     _prem_guard(request)
-    data = await _build_giveaways()
-    try:
-        from utils.db import get_db, is_mongo, get_sqlite_path
-        gids = [g.get("giveaway_id") for g in data if g.get("giveaway_id")]
-        if gids:
-            if is_mongo():
-                db = get_db()
-                panels = await db.panels.find(
-                    {"ref_id": {"$in": gids}, "panel_type": "giveaway", "is_deleted": False},
-                    {"ref_id": 1, "token": 1}
-                ).to_list(None)
-                token_map = {p["ref_id"]: p["token"] for p in panels}
-            else:
-                import aiosqlite
-                placeholders = ",".join("?" * len(gids))
-                async with aiosqlite.connect(get_sqlite_path()) as conn:
-                    async with conn.execute(
-                        f"SELECT ref_id, token FROM panels WHERE ref_id IN ({placeholders}) AND panel_type='giveaway' AND is_deleted=0",
-                        gids
-                    ) as cur:
-                        token_map = {r[0]: r[1] for r in await cur.fetchall()}
-            for g in data:
-                g["panel_token"] = token_map.get(g.get("giveaway_id"))
-    except Exception as e:
-        logger.warning(f"prem_api_giveaways enrich error: {e}")
-    return JSONResponse(data)
+    return JSONResponse(await _build_giveaways())
 
 
 @app.get("/tg/premium/api/users")
@@ -2356,136 +2331,99 @@ async def remove_premium_panel_user(username: str) -> bool:
         return False
 
 
-# ── Premium broadcast ──────────────────────────────────────────
-@app.post("/tg/premium/api/broadcast")
-async def prem_api_broadcast(request: Request):
-    _rate_guard(request)
-    _prem_guard(request)
-    body = await request.json()
-    msg = body.get("message", "").strip()
-    if not msg:
-        raise HTTPException(400, detail="Message is empty")
-    from web.broadcaster import do_global_broadcast
-    asyncio.create_task(do_global_broadcast(msg))
-    return JSONResponse({"ok": True, "detail": "Broadcast started"})
+# ── Telegram Mini App Auth for Premium Panel ───────────────────
+@app.post("/tg/premium/tg_auth")
+async def prem_tg_auth(request: Request):
+    """
+    Validates Telegram WebApp initData, checks if user has premium_panel_users
+    entry, sets session cookie and returns ok:True.
+    """
+    import hmac as _hmac
+    import hashlib as _hashlib
+    import urllib.parse as _up
+    import json as _json
 
-
-# ── Premium close giveaway ─────────────────────────────────────
-@app.post("/tg/premium/api/close_giveaway")
-async def prem_api_close_giveaway(request: Request):
-    _rate_guard(request)
-    _prem_guard(request)
     body = await request.json()
-    giveaway_id = body.get("giveaway_id", "").strip().upper()
-    if not giveaway_id:
-        raise HTTPException(400, detail="giveaway_id required")
+    init_data = body.get("init_data", "")
+    if not init_data:
+        raise HTTPException(400, detail="No init_data provided")
+
+    # ── Validate initData signature ──────────────────────────
     try:
-        from utils.db import get_db, is_mongo, get_sqlite_path
-        if is_mongo():
-            result = await get_db().giveaways.update_one(
-                {"giveaway_id": giveaway_id},
-                {"$set": {"is_active": False}}
-            )
-            ok = result.modified_count > 0
-        else:
-            import aiosqlite
-            async with aiosqlite.connect(get_sqlite_path()) as conn:
-                await conn.execute(
-                    "UPDATE giveaways SET is_active=0 WHERE giveaway_id=?",
-                    (giveaway_id,)
-                )
-                await conn.commit()
-            ok = True
-        return JSONResponse({"ok": ok})
+        parsed = dict(_up.parse_qsl(init_data, keep_blank_values=True))
+        received_hash = parsed.pop("hash", "")
+        data_check = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+        secret_key = _hmac.new(b"WebAppData", settings.BOT_TOKEN.encode(), _hashlib.sha256).digest()
+        expected = _hmac.new(secret_key, data_check.encode(), _hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(expected, received_hash):
+            raise HTTPException(401, detail="Invalid Telegram signature")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, detail=str(e))
+        raise HTTPException(400, detail=f"initData parse error: {e}")
 
+    # ── Get user ID from initData ────────────────────────────
+    try:
+        user_obj = _json.loads(parsed.get("user", "{}"))
+        tg_id = int(user_obj.get("id", 0))
+        if not tg_id:
+            raise HTTPException(401, detail="No user ID in initData")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, detail="Could not parse user from initData")
 
-# ── Premium participants ───────────────────────────────────────
-@app.get("/tg/premium/api/participants/{giveaway_id}")
-async def prem_api_participants(giveaway_id: str, request: Request):
-    _rate_guard(request)
-    _prem_guard(request)
-    giveaway_id = giveaway_id.upper()
-    participants = []
+    # ── Check if user has premium panel access ───────────────
     try:
         from utils.db import get_db, is_mongo, get_sqlite_path
         if is_mongo():
             db = get_db()
-            votes = await db.votes.find(
-                {"giveaway_id": giveaway_id}
-            ).sort("vote_count", -1).to_list(None)
-            participants = [
-                {
-                    "user_name": v.get("user_name") or v.get("first_name") or "Unknown",
-                    "vote_count": v.get("vote_count", 1),
-                    "user_id": v.get("user_id"),
-                }
-                for v in votes
-            ]
+            user_doc = await db.premium_panel_users.find_one({"tg_id": tg_id})
         else:
             import aiosqlite
             async with aiosqlite.connect(get_sqlite_path()) as conn:
-                conn.row_factory = aiosqlite.Row
-                try:
-                    async with conn.execute(
-                        "SELECT * FROM votes WHERE giveaway_id=? ORDER BY vote_count DESC",
-                        (giveaway_id,)
-                    ) as cur:
-                        rows = await cur.fetchall()
-                    participants = [
-                        {
-                            "user_name": r["user_name"] or "Unknown",
-                            "vote_count": r.get("vote_count", 1),
-                            "user_id": r["user_id"],
-                        }
-                        for r in rows
-                    ]
-                except Exception:
-                    participants = []
+                async with conn.execute(
+                    "SELECT * FROM premium_panel_users WHERE tg_id=?", (tg_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+            user_doc = dict(row) if row else None
 
-        if not participants:
-            archived = await _fetch_archived_giveaway(giveaway_id)
-            if archived:
-                votes = archived.get("votes", [])
-                participants = [
-                    {
-                        "user_name": v.get("user_name") or "Unknown",
-                        "vote_count": v.get("vote_count", 1),
-                        "user_id": v.get("user_id"),
-                    }
-                    for v in votes
-                ]
-    except Exception as e:
-        logger.error(f"prem_participants error: {e}")
-    return JSONResponse({"participants": participants, "total": len(participants)})
-
-
-# ── Close poll from user panel ─────────────────────────────────
-@app.post("/panel/{token}/close")
-async def panel_close_poll(token: str, request: Request):
-    from models.panel import get_panel
-    from utils.db import get_db, is_mongo, get_sqlite_path
-    panel = await get_panel(token)
-    if not panel:
-        raise HTTPException(404)
-    giveaway_id = panel.get("ref_id")
-    if not giveaway_id:
-        raise HTTPException(400, detail="No giveaway linked")
-    try:
-        if is_mongo():
-            await get_db().giveaways.update_one(
-                {"giveaway_id": giveaway_id},
-                {"$set": {"is_active": False}}
-            )
-        else:
-            import aiosqlite
-            async with aiosqlite.connect(get_sqlite_path()) as conn:
-                await conn.execute(
-                    "UPDATE giveaways SET is_active=0 WHERE giveaway_id=?",
-                    (giveaway_id,)
-                )
-                await conn.commit()
-        return JSONResponse({"ok": True})
+        if not user_doc:
+            raise HTTPException(403, detail="No premium panel access. Ask admin to run /addpreuser.")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, detail=str(e))
+
+    # ── Set session cookie ───────────────────────────────────
+    username = user_doc.get("username", str(tg_id))
+    import hashlib as _hl
+    token = _hl.sha256(f"{tg_id}:{settings.BOT_TOKEN}:prem".encode()).hexdigest()
+
+    r = JSONResponse({"ok": True, "username": username})
+    r.set_cookie(
+        "prem_session", token,
+        httponly=True, samesite="lax",
+        max_age=60 * 60 * 24 * 7  # 7 days
+    )
+    # Store valid token in memory for session check
+    _prem_valid_tokens.add(token)
+    return r
+
+
+# In-memory set of valid Telegram-auth tokens
+_prem_valid_tokens: set = set()
+
+
+# ── Premium dashboard redirect ─────────────────────────────────
+@app.get("/tg/premium/dashboard")
+async def prem_dashboard_redirect(request: Request):
+    """Redirect to the user's premium dashboard after Telegram login."""
+    try:
+        _prem_guard(request)
+        # Find user's clone token to redirect to their dashboard
+        session_token = request.cookies.get("prem_session", "")
+        # Redirect to main premium user page
+        return RedirectResponse(url="/tg/premium/user/tg/overview", status_code=302)
+    except HTTPException:
+        return RedirectResponse(url="/tg/premium/login", status_code=302)
