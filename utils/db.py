@@ -44,6 +44,7 @@ async def _init_sqlite():
                 end_time TEXT,
                 message_id INTEGER,
                 allow_winner_dm INTEGER DEFAULT 0,
+                count_left_members INTEGER DEFAULT 1,
                 created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS votes (
@@ -107,6 +108,12 @@ async def _init_sqlite():
         # Migration: add allow_winner_dm column if missing (for existing DBs)
         try:
             await conn.execute("ALTER TABLE giveaways ADD COLUMN allow_winner_dm INTEGER DEFAULT 0")
+            await conn.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add count_left_members column if missing (for existing DBs)
+        try:
+            await conn.execute("ALTER TABLE giveaways ADD COLUMN count_left_members INTEGER DEFAULT 1")
             await conn.commit()
         except Exception:
             pass  # Column already exists
