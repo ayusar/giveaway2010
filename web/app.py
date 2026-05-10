@@ -1744,6 +1744,13 @@ async def health():
     return JSONResponse({"status": "ok", "uptime": int(time.time() - _start_time)})
 
 
+@app.head("/uptime")
+async def uptime_head():
+    """HEAD endpoint for uptime monitoring services (UptimeRobot, Freshping, etc.)."""
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+
 @app.get("/")
 async def root():
     """Root redirect to admin panel."""
