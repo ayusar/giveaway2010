@@ -139,7 +139,7 @@ async def form_channel_id(message: Message, state: FSMContext, bot: Bot):
         parse_mode="HTML",
     )
     from utils.channel_admin_check import verify_channel_admin
-    ok, err = await verify_channel_admin(bot, user_id, channel)
+    ok, err, chat_id, chat_title = await verify_channel_admin(bot, user_id, channel)
     try:
         await verifying_msg.delete()
     except Exception:
@@ -149,18 +149,12 @@ async def form_channel_id(message: Message, state: FSMContext, bot: Bot):
         await message.answer(err, parse_mode="HTML", reply_markup=_cancel_keyboard())
         return
     logger.info(f"[GIVEAWAY] form_channel_id: admin check PASSED user={user_id} channel={channel}")
-    # ─────────────────────────────────────────────────────────────
 
-    # Resolve chat ID and title (already confirmed accessible above)
-    chat_id = channel
-    chat_title = channel
-    try:
-        chat = await bot.get_chat(channel)
-        chat_id = str(chat.id)
-        chat_title = chat.title or channel
-        logger.info(f"[GIVEAWAY] form_channel_id: resolved chat_id={chat_id} title={chat_title}")
-    except Exception as e:
-        logger.warning(f"[GIVEAWAY] form_channel_id: get_chat failed ({e}), using raw input as chat_id")
+    # Use the chat_id and chat_title returned from verify_channel_admin
+    if not chat_id:
+        chat_id = channel
+    if not chat_title:
+        chat_title = channel
 
     await state.update_data(
         channel_id=chat_id,
