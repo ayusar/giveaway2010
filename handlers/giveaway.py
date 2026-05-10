@@ -21,12 +21,13 @@ router = Router()
 
 
 class GiveawayForm(StatesGroup):
-    channel_id     = State()
-    title          = State()
-    prizes         = State()
-    options        = State()
-    end_time       = State()
-    confirm        = State()
+    channel_id          = State()
+    title               = State()
+    prizes              = State()
+    options             = State()
+    end_time            = State()
+    count_left_members  = State()
+    confirm             = State()
 
 
 # ─── Shared keyboards ─────────────────────────────────────────
@@ -43,6 +44,14 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✅ Post Giveaway", callback_data="giveaway_confirm:yes"),
             InlineKeyboardButton(text="❌ Cancel",        callback_data="giveaway_confirm:no"),
         ]
+    ])
+
+
+def _count_left_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Yes, count their votes", callback_data="countleft:yes")],
+        [InlineKeyboardButton(text="❌ No, remove votes when they leave", callback_data="countleft:no")],
+        [InlineKeyboardButton(text="🚫 Cancel", callback_data="giveaway_cancel")],
     ])
 
 
@@ -251,7 +260,7 @@ async def handle_endtime_choice(callback: CallbackQuery, state: FSMContext):
             reply_markup=_cancel_keyboard(),
         )
         return
-    await _show_preview(callback.message, state)
+    await _ask_count_left(callback.message, state)
 
 
 @router.message(GiveawayForm.end_time)
@@ -265,7 +274,28 @@ async def form_end_time(message: Message, state: FSMContext):
         )
         return
     await state.update_data(end_time=end_time)
-    await _show_preview(message, state)
+    await _ask_count_left(message, state)
+
+
+async def _ask_count_left(msg: Message, state: FSMContext):
+    await state.set_state(GiveawayForm.count_left_members)
+    await msg.answer(
+        "👥 <b>Left Member Votes</b>\n\n"
+        "If someone <b>leaves the channel</b> after voting, should their vote <b>still count</b>?\n\n"
+        "• <b>Yes</b> — votes stay even if they leave\n"
+        "• <b>No</b> — their vote is removed when they leave the channel",
+        parse_mode="HTML",
+        reply_markup=_count_left_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("countleft:"))
+async def handle_countleft_choice(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    choice = callback.data.split(":")[1]
+    count_left = (choice == "yes")
+    await state.update_data(count_left_members=count_left)
+    await _show_preview(callback.message, state)
 
 
 
@@ -288,13 +318,17 @@ async def _show_preview(msg: Message, state: FSMContext):
     if data.get("end_time"):
         end_str = f"\n⏰ <b>Ends:</b> {data['end_time'].strftime('%Y-%m-%d %H:%M')} UTC"
 
+    count_left = data.get("count_left_members", True)
+    count_left_str = "✅ Yes (votes stay)" if count_left else "❌ No (votes removed on leave)"
+
     await msg.answer(
         "👀 <b>Preview — Review before posting</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Channel:</b> {data['channel_username']}\n"
         f"🏷 <b>Title:</b> {data['title']}{end_str}\n\n"
         f"🎁 <b>Prizes:</b>\n{prizes_preview}\n\n"
-        f"🗳 <b>Options ({len(options)}):</b>\n{options_preview}",
+        f"🗳 <b>Options ({len(options)}):</b>\n{options_preview}\n\n"
+        f"👥 <b>Count votes of members who leave:</b> {count_left_str}",
         parse_mode="HTML",
         reply_markup=_confirm_keyboard(),
     )
@@ -324,6 +358,7 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
         prizes=data["prizes"],
         options=data["options"],
         end_time=data.get("end_time"),
+        count_left_members=data.get("count_left_members", True),
     )
 
     _creator_premium = await is_premium(callback.from_user.id)
@@ -1000,6 +1035,73 @@ async def debug_unhandled(message: Message, state: FSMContext):
         f"[GIVEAWAY] UNHANDLED MESSAGE: user={message.from_user.id} "
         f"text={repr(message.text)} current_state={current}"
     )
+
+
+# ─── Chat Member: remove votes when user leaves channel ───────
+
+from aiogram.types import ChatMemberUpdated
+from aiogram.filters import ChatMemberUpdatedFilter, MEMBER, LEFT, KICKED
+
+
+@router.chat_member(ChatMemberUpdatedFilter(member_status_changed=LEFT | KICKED))
+async def on_member_left(event: ChatMemberUpdated, bot: Bot):
+    """
+    Fired when a user leaves or is kicked from any chat the bot is in.
+    If the chat has active giveaways with count_left_members=False,
+    the user's vote is removed from those giveaways.
+    """
+    user_id = event.new_chat_member.user.id
+    channel_id = str(event.chat.id)
+
+    try:
+        from models.giveaway import get_active_giveaways_for_channel, remove_vote_for_user
+        active = await get_active_giveaways_for_channel(channel_id)
+        for giveaway in active:
+            if giveaway.get("count_left_members", True):
+                continue  # Creator said votes should stay — skip
+            removed = await remove_vote_for_user(giveaway["giveaway_id"], user_id)
+            if removed:
+                logger.info(
+                    f"[GIVEAWAY] Vote removed: user={user_id} left channel={channel_id} "
+                    f"giveaway={giveaway['giveaway_id']}"
+                )
+                # Refresh the poll message to reflect updated vote count
+                try:
+                    from models.giveaway import get_giveaway
+                    updated = await get_giveaway(giveaway["giveaway_id"])
+                    if not updated:
+                        continue
+                    votes_raw = updated.get("votes", {}) or {}
+                    if isinstance(votes_raw, str):
+                        import json as _j
+                        try:
+                            votes_raw = _j.loads(votes_raw)
+                        except Exception:
+                            votes_raw = {}
+                    votes = {int(k): v for k, v in votes_raw.items()}
+                    text = render_giveaway_message(
+                        title=updated["title"],
+                        prizes=updated.get("prizes", []),
+                        options=updated["options"],
+                        votes=votes,
+                        total_votes=updated.get("total_votes", 0),
+                        is_active=updated.get("is_active", True),
+                    )
+                    keyboard = build_vote_keyboard(
+                        giveaway["giveaway_id"], updated["options"],
+                        is_active=updated.get("is_active", True)
+                    )
+                    await bot.edit_message_text(
+                        text,
+                        chat_id=updated["channel_id"],
+                        message_id=updated["message_id"],
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.debug(f"[GIVEAWAY] on_member_left: edit_text skipped: {e}")
+    except Exception as e:
+        logger.warning(f"[GIVEAWAY] on_member_left error: {e}")
 
 
 # ─── /giveawayinfo <id> ────────────────────────────────────────
