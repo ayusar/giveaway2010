@@ -10,7 +10,7 @@ def _now() -> str:
 
 # ─── MONGO HELPERS ───────────────────────────────────────────
 
-async def _mongo_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm=False):
+async def _mongo_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm=False, count_left_members=True):
     from utils.db import get_db
     db = get_db()
     giveaway = {
@@ -26,6 +26,7 @@ async def _mongo_create(creator_id, channel_id, title, prizes, options, end_time
         "end_time": end_time,
         "message_id": message_id,
         "allow_winner_dm": allow_winner_dm,
+        "count_left_members": count_left_members,
         "created_at": datetime.utcnow()
     }
     await db.giveaways.insert_one(giveaway)
@@ -78,7 +79,7 @@ async def _mongo_update_message(giveaway_id, message_id, channel_id):
 
 # ─── SQLITE HELPERS ───────────────────────────────────────────
 
-async def _sqlite_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm=False):
+async def _sqlite_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm=False, count_left_members=True):
     import aiosqlite
     from utils.db import get_sqlite_path
     giveaway_id = str(uuid.uuid4())[:8].upper()
@@ -86,13 +87,13 @@ async def _sqlite_create(creator_id, channel_id, title, prizes, options, end_tim
         await conn.execute(
             """INSERT INTO giveaways
                (giveaway_id, creator_id, channel_id, title, prizes, options,
-                votes, total_votes, is_active, end_time, message_id, allow_winner_dm, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                votes, total_votes, is_active, end_time, message_id, allow_winner_dm, count_left_members, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (giveaway_id, creator_id, channel_id, title,
              json.dumps(prizes), json.dumps(options),
              "{}", 0, 1,
              end_time.isoformat() if end_time else None,
-             message_id, 1 if allow_winner_dm else 0, _now())
+             message_id, 1 if allow_winner_dm else 0, 1 if count_left_members else 0, _now())
         )
         await conn.commit()
     return await _sqlite_get(giveaway_id)
@@ -131,6 +132,7 @@ def _row_to_giveaway(row: dict) -> dict:
     row["votes"] = json.loads(row["votes"])
     row["is_active"] = bool(row["is_active"])
     row["allow_winner_dm"] = bool(row.get("allow_winner_dm", 0))
+    row["count_left_members"] = bool(row.get("count_left_members", 1))
     return row
 
 
@@ -199,11 +201,11 @@ async def _sqlite_update_message(giveaway_id, message_id, channel_id):
 # ─── PUBLIC API ───────────────────────────────────────────────
 
 async def create_giveaway(creator_id, channel_id, title, prizes, options,
-                           end_time=None, message_id=None, allow_winner_dm=False):
+                           end_time=None, message_id=None, allow_winner_dm=False, count_left_members=True):
     from utils.db import is_mongo
     if is_mongo():
-        return await _mongo_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm)
-    return await _sqlite_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm)
+        return await _mongo_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm, count_left_members)
+    return await _sqlite_create(creator_id, channel_id, title, prizes, options, end_time, message_id, allow_winner_dm, count_left_members)
 
 
 async def get_giveaway(giveaway_id: str):
@@ -300,3 +302,92 @@ async def update_giveaway_message_id(giveaway_id: str, message_id: int, channel_
     if is_mongo():
         return await _mongo_update_message(giveaway_id, message_id, channel_id)
     return await _sqlite_update_message(giveaway_id, message_id, channel_id)
+
+
+# ─── REMOVE VOTE FOR LEAVING USER ────────────────────────────
+
+async def _mongo_remove_vote(giveaway_id: str, user_id: int) -> bool:
+    """Remove a user's vote from a giveaway (called when user leaves channel)."""
+    from utils.db import get_db
+    db = get_db()
+    vote_doc = await db.votes.find_one({"giveaway_id": giveaway_id, "user_id": user_id})
+    if not vote_doc:
+        return False
+    option_index = vote_doc["option_index"]
+    await db.votes.delete_one({"giveaway_id": giveaway_id, "user_id": user_id})
+    key = str(option_index)
+    await db.giveaways.update_one(
+        {"giveaway_id": giveaway_id},
+        {"$inc": {f"votes.{key}": -1, "total_votes": -1}}
+    )
+    return True
+
+
+async def _sqlite_remove_vote(giveaway_id: str, user_id: int) -> bool:
+    """Remove a user's vote from a giveaway (called when user leaves channel)."""
+    import aiosqlite
+    from utils.db import get_sqlite_path
+    path = get_sqlite_path()
+    async with aiosqlite.connect(path) as conn:
+        async with conn.execute(
+            "SELECT option_index FROM votes WHERE giveaway_id=? AND user_id=?",
+            (giveaway_id, user_id)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return False
+        option_index = row[0]
+        await conn.execute(
+            "DELETE FROM votes WHERE giveaway_id=? AND user_id=?",
+            (giveaway_id, user_id)
+        )
+        async with conn.execute(
+            "SELECT votes, total_votes FROM giveaways WHERE giveaway_id=?",
+            (giveaway_id,)
+        ) as cur:
+            grow = await cur.fetchone()
+        if grow:
+            try:
+                votes = json.loads(grow[0] or "{}")
+            except Exception:
+                votes = {}
+            key = str(option_index)
+            votes[key] = max(0, votes.get(key, 1) - 1)
+            new_total = max(0, (grow[1] or 1) - 1)
+            await conn.execute(
+                "UPDATE giveaways SET votes=?, total_votes=? WHERE giveaway_id=?",
+                (json.dumps(votes), new_total, giveaway_id)
+            )
+        await conn.commit()
+    return True
+
+
+async def remove_vote_for_user(giveaway_id: str, user_id: int) -> bool:
+    """Remove a user's vote — called when they leave the channel and count_left_members=False."""
+    from utils.db import is_mongo
+    if is_mongo():
+        return await _mongo_remove_vote(giveaway_id, user_id)
+    return await _sqlite_remove_vote(giveaway_id, user_id)
+
+
+async def get_active_giveaways_for_channel(channel_id: str) -> list:
+    """Return all active giveaways for a given channel_id."""
+    from utils.db import is_mongo
+    if is_mongo():
+        from utils.db import get_db
+        cursor = get_db().giveaways.find({"channel_id": channel_id, "is_active": True})
+        return await cursor.to_list(length=100)
+    else:
+        import aiosqlite
+        from utils.db import get_sqlite_path
+        results = []
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM giveaways WHERE channel_id=? AND is_active=1",
+                (channel_id,)
+            ) as cur:
+                rows = await cur.fetchall()
+        for row in rows:
+            results.append(_row_to_giveaway(dict(row)))
+        return results
