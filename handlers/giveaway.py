@@ -657,10 +657,13 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
             username = str(raw_channel_id).lstrip("@")
         await callback.answer("⚠️ Join the channel first to vote!", show_alert=True)
         try:
-            await callback.message.reply(
-                "❌ You must join the channel before voting!",
+            # Use bot.send_message instead of reply for reliable disable_notification
+            await bot.send_message(
+                chat_id=callback.message.chat.id,
+                text="❌ You must join the channel before voting!",
                 reply_markup=build_verify_join_keyboard(giveaway_id, username),
-                disable_notification=True  # Silent message - no notification sound
+                disable_notification=True,  # Silent message - no notification sound
+                reply_to_message_id=callback.message.message_id
             )
         except Exception:
             pass
