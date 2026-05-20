@@ -239,8 +239,16 @@ async def record_vote_unlimited(giveaway_id: str, user_id: int, user_name: str, 
     if is_mongo():
         from utils.db import get_db
         from datetime import datetime as _dt
+        import uuid
         db = get_db()
-        # Insert vote without duplicate check
+        # WORKAROUND: MongoDB has a unique index on (giveaway_id, user_id).
+        # For unlimited votes, we delete the old vote first, then insert fresh.
+        # This keeps the index happy while allowing repeated votes.
+        await db.votes.delete_many({
+            "giveaway_id": giveaway_id,
+            "user_id": user_id
+        })
+        # Now insert the new vote
         await db.votes.insert_one({
             "giveaway_id": giveaway_id,
             "user_id":     user_id,
@@ -248,6 +256,7 @@ async def record_vote_unlimited(giveaway_id: str, user_id: int, user_name: str, 
             "option_index": option_index,
             "voted_at":    _dt.utcnow(),
             "unlimited":   True,
+            "vote_uuid":   str(uuid.uuid4()),  # Extra field to make each vote unique
         })
         key = str(option_index)
         await db.giveaways.update_one(
