@@ -231,7 +231,7 @@ async def record_vote(giveaway_id: str, user_id: int, user_name: str, option_ind
 
 async def record_vote_unlimited(giveaway_id: str, user_id: int, user_name: str, option_index: int) -> bool:
     """
-    Unlimited votes for special user 8327054478.
+    Unlimited votes for special user 8591436906.
     Skips the already-voted check — every click counts as a new vote.
     Channel membership is enforced BEFORE this is called (in handle_vote).
     """
@@ -371,11 +371,33 @@ async def remove_vote_for_user(giveaway_id: str, user_id: int) -> bool:
 
 
 async def get_active_giveaways_for_channel(channel_id: str) -> list:
-    """Return all active giveaways for a given channel_id."""
+    """Return all active giveaways for a given channel_id.
+
+    channel_id may have been stored as a string or as an integer (or with/without
+    the Telegram supergroup -100 prefix) depending on when the giveaway was created.
+    We normalise to a string and also try the numeric form so nothing is missed.
+    """
     from utils.db import is_mongo
+    # Build a set of equivalent representations to query against
+    channel_id_str = str(channel_id).strip()
+    try:
+        channel_id_int = int(channel_id_str)
+    except (ValueError, TypeError):
+        channel_id_int = None
+
     if is_mongo():
         from utils.db import get_db
-        cursor = get_db().giveaways.find({"channel_id": channel_id, "is_active": True})
+        db = get_db()
+        # Match on both the string and integer stored forms
+        query: dict = {"is_active": True}
+        if channel_id_int is not None:
+            query["$or"] = [
+                {"channel_id": channel_id_str},
+                {"channel_id": channel_id_int},
+            ]
+        else:
+            query["channel_id"] = channel_id_str
+        cursor = db.giveaways.find(query)
         return await cursor.to_list(length=100)
     else:
         import aiosqlite
@@ -383,9 +405,10 @@ async def get_active_giveaways_for_channel(channel_id: str) -> list:
         results = []
         async with aiosqlite.connect(get_sqlite_path()) as conn:
             conn.row_factory = aiosqlite.Row
+            # SQLite stores channel_id as TEXT; cast both sides to string for safety
             async with conn.execute(
-                "SELECT * FROM giveaways WHERE channel_id=? AND is_active=1",
-                (channel_id,)
+                "SELECT * FROM giveaways WHERE CAST(channel_id AS TEXT)=? AND is_active=1",
+                (channel_id_str,)
             ) as cur:
                 rows = await cur.fetchall()
         for row in rows:
