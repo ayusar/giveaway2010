@@ -1034,10 +1034,17 @@ async def debug_unhandled(message: Message, state: FSMContext):
 # ─── Chat Member: remove votes when user leaves channel ───────
 
 from aiogram.types import ChatMemberUpdated
-from aiogram.filters import ChatMemberUpdatedFilter, MEMBER, LEFT, KICKED
+from aiogram.filters import ChatMemberUpdatedFilter, MEMBER, LEFT, KICKED, ADMINISTRATOR, RESTRICTED
 
 
-@router.chat_member(ChatMemberUpdatedFilter(member_status_changed=LEFT | KICKED))
+# Fix: use the full transition filter so it fires when a member/admin/restricted
+# user transitions TO left/kicked. Without the "from" states, aiogram 3.x only
+# matches bot status changes (my_chat_member), not real member departures.
+@router.chat_member(
+    ChatMemberUpdatedFilter(
+        member_status_changed=(MEMBER | ADMINISTRATOR | RESTRICTED) >> (LEFT | KICKED)
+    )
+)
 async def on_member_left(event: ChatMemberUpdated, bot: Bot):
     """
     Fired when a user leaves or is kicked from any chat the bot is in.
@@ -1045,6 +1052,8 @@ async def on_member_left(event: ChatMemberUpdated, bot: Bot):
     the user's vote is removed from those giveaways.
     """
     user_id = event.new_chat_member.user.id
+    # Normalise channel_id: try both str and int forms so DB lookups match
+    # regardless of how the value was stored when the giveaway was created.
     channel_id = str(event.chat.id)
 
     try:
