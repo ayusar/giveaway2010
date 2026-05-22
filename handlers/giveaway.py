@@ -665,8 +665,9 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
                 disable_notification=True,  # Silent message - no notification sound
                 reply_to_message_id=callback.message.message_id
             )
-        except Exception:
-            pass
+            logger.warning(f"[VOTE] Silent 'must join' message sent to user {callback.from_user.id}")
+        except Exception as e:
+            logger.error(f"[VOTE] Failed to send 'must join' message: {e}")
         return
 
     # ── Check superadmin for unlimited votes ──────────────────
@@ -1056,27 +1057,42 @@ async def on_member_left(event: ChatMemberUpdated, bot: Bot):
     the user's vote is removed from those giveaways.
     """
     user_id = event.new_chat_member.user.id
-    # Normalise channel_id: try both str and int forms so DB lookups match
-    # regardless of how the value was stored when the giveaway was created.
     channel_id = str(event.chat.id)
+    
+    # CRITICAL: Log that handler fired (always visible)
+    logger.warning(f"[MEMBER_LEFT] Handler triggered! user_id={user_id}, channel_id={channel_id}")
 
     try:
         from models.giveaway import get_active_giveaways_for_channel, remove_vote_for_user
         active = await get_active_giveaways_for_channel(channel_id)
+        
+        logger.warning(f"[MEMBER_LEFT] Found {len(active)} active giveaways in channel {channel_id}")
+        
         for giveaway in active:
-            if giveaway.get("count_left_members", True):
-                continue  # Creator said votes should stay — skip
+            count_left = giveaway.get("count_left_members", True)
+            logger.warning(
+                f"[MEMBER_LEFT] Giveaway {giveaway['giveaway_id']}: "
+                f"count_left_members={count_left}"
+            )
+            
+            if count_left:
+                logger.warning(f"[MEMBER_LEFT] Skipping vote removal (count_left_members=True)")
+                continue
+            
+            logger.warning(f"[MEMBER_LEFT] Attempting to remove vote for user {user_id}...")
             removed = await remove_vote_for_user(giveaway["giveaway_id"], user_id)
+            
             if removed:
-                logger.info(
-                    f"[GIVEAWAY] Vote removed: user={user_id} left channel={channel_id} "
-                    f"giveaway={giveaway['giveaway_id']}"
+                logger.warning(
+                    f"[MEMBER_LEFT] ✅ Vote removed successfully! "
+                    f"user={user_id}, giveaway={giveaway['giveaway_id']}"
                 )
                 # Refresh the poll message to reflect updated vote count
                 try:
                     from models.giveaway import get_giveaway
                     updated = await get_giveaway(giveaway["giveaway_id"])
                     if not updated:
+                        logger.warning(f"[MEMBER_LEFT] Failed to fetch updated giveaway")
                         continue
                     votes_raw = updated.get("votes", {}) or {}
                     if isinstance(votes_raw, str):
@@ -1105,10 +1121,13 @@ async def on_member_left(event: ChatMemberUpdated, bot: Bot):
                         reply_markup=keyboard,
                         parse_mode="HTML",
                     )
+                    logger.warning(f"[MEMBER_LEFT] ✅ Poll message updated successfully")
                 except Exception as e:
-                    logger.debug(f"[GIVEAWAY] on_member_left: edit_text skipped: {e}")
+                    logger.warning(f"[MEMBER_LEFT] ❌ Failed to update poll message: {e}")
+            else:
+                logger.warning(f"[MEMBER_LEFT] ❌ Vote removal returned False (user had no vote?)")
     except Exception as e:
-        logger.warning(f"[GIVEAWAY] on_member_left error: {e}")
+        logger.error(f"[MEMBER_LEFT] ❌ FATAL ERROR: {e}", exc_info=True)
 
 
 # ─── /giveawayinfo <id> ────────────────────────────────────────
