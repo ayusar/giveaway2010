@@ -57,6 +57,8 @@ body::before {
   position: fixed; top: 0; left: 0; bottom: 0;
   z-index: 100;
   transition: transform .25s cubic-bezier(.4,0,.2,1);
+  /* Ensure solid background on all devices */
+  background-color: #0f0f1c;
 }
 .logo { padding: 0 24px 28px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
 .logo-mark {
@@ -97,6 +99,9 @@ body::before {
   padding: 9px 12px; border-radius: 10px;
   font-size: 13px; font-weight: 500; cursor: pointer;
   transition: all .15s; color: var(--muted);
+  /* Ensure clickable on all devices */
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 .nav-item:hover  { background: var(--card); color: var(--text); }
 .nav-item.active { background: #6c5ce718; color: var(--accent); }
@@ -301,7 +306,7 @@ tr:hover td { background: #ffffff04; }
   background: linear-gradient(135deg, var(--accent), var(--accent2));
   -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .hamburger { background: none; border: none; color: var(--text); font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: 8px; line-height: 1; }
-.sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 150; }
+.sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 250; backdrop-filter: blur(2px); }
 .sidebar-overlay.open { display: block; }
 
 .bottom-nav {
@@ -322,8 +327,8 @@ tr:hover td { background: #ffffff04; }
 @media (max-width: 767px) {
   .mobile-topbar { display: flex; }
   .bottom-nav    { display: flex; }
-  .sidebar { transform: translateX(-100%); z-index: 300; width: 280px; top: 0; }
-  .sidebar.open { transform: translateX(0); z-index: 160; }
+  .sidebar { transform: translateX(-100%); z-index: 300; width: 280px; top: 0; background-color: #0f0f1c; }
+  .sidebar.open { transform: translateX(0); z-index: 300; }
   .shell { display: block; }
   .main { margin-left: 0; max-width: 100vw; padding: 72px 16px 84px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
@@ -507,20 +512,6 @@ body.tg-dark { --bg: #0d1117; --surface: #161b22; --card: #1a2129; --border: #30
   </div>
 
   <!-- Live user count -->
-  <div class="section">
-    <div class="section-header">
-      <div class="section-title"><span class="live-dot"></span> Live Users</div>
-      <span style="font-size:12px;color:var(--muted)">Updates every 5s</span>
-    </div>
-    <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;display:flex;align-items:center;gap:20px">
-      <div style="font-family:'Syne',sans-serif;font-size:48px;font-weight:800;color:var(--accent)" id="live-user-count">—</div>
-      <div>
-        <div style="font-size:14px;font-weight:500">Bot users right now</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:4px">Total registered across all clone bots</div>
-      </div>
-    </div>
-  </div>
-
   <!-- Recent giveaways -->
   <div class="section">
     <div class="section-header">
@@ -1022,11 +1013,25 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('page-overview').classList.add('active');
   document.querySelector('.nav-item')?.classList.add('active');
 
-  // Load data
-  await Promise.all([loadStats(), loadRecentGiveaways()]);
+  // Force-hide loading overlay after 3 seconds even if API fails
+  const forceLoad = setTimeout(() => {
+    console.warn('API timeout - forcing page load');
+    document.getElementById('loading-overlay').style.display = 'none';
+  }, 3000);
 
-  // Hide loading overlay
-  document.getElementById('loading-overlay').style.display = 'none';
+  // Load data with error handling
+  try {
+    await Promise.all([
+      loadStats().catch(e => console.error('Stats failed:', e)),
+      loadRecentGiveaways().catch(e => console.error('Giveaways failed:', e))
+    ]);
+  } catch (e) {
+    console.error('Init failed:', e);
+  } finally {
+    // Clear the force-load timeout and hide overlay
+    clearTimeout(forceLoad);
+    document.getElementById('loading-overlay').style.display = 'none';
+  }
 
   // Settings grid responsive fix
   window.addEventListener('resize', () => {
@@ -1034,10 +1039,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (grid) grid.style.gridTemplateColumns = window.innerWidth < 768 ? '1fr' : '1fr 1fr';
   });
 });
-
-// ══ Live users polling ═══════════════════════════════════════════
-setInterval(loadLiveUsers, 5000);
-loadLiveUsers();
 </script>
 </body>
 </html>
