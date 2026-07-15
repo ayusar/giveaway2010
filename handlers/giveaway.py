@@ -14,7 +14,10 @@ from models.giveaway import (
     create_giveaway, get_giveaway, record_vote, record_vote_unlimited,
     close_giveaway, update_giveaway_message_id
 )
-from utils.poll_renderer import render_giveaway_message, build_vote_keyboard, build_verify_join_keyboard
+from utils.poll_renderer import (
+    render_giveaway_message, build_vote_keyboard,
+    build_verify_join_keyboard, build_dm_join_vote_keyboard,
+)
 from utils.premium import is_premium
 
 router = Router()
@@ -363,7 +366,8 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
         end_time=data.get("end_time"),
         hide_stamp=_creator_premium,
     )
-    keyboard = build_vote_keyboard(giveaway["giveaway_id"], data["options"], is_active=True)
+    _me = await bot.get_me()
+    keyboard = build_vote_keyboard(giveaway["giveaway_id"], data["options"], is_active=True, bot_username=_me.username)
 
     # Resolve channel_id — must be numeric for send_message to work reliably
     channel_id = data["channel_id"]
@@ -655,19 +659,24 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
             username = chat.username or str(raw_channel_id).lstrip("@")
         except Exception:
             username = str(raw_channel_id).lstrip("@")
-        await callback.answer("⚠️ Join the channel first to vote!", show_alert=True)
+
+        # Never post anything into the channel for a non-member. Tell them
+        # in DM instead, and let them finish voting there once they join.
+        await callback.answer("⚠️ Join the channel first — check your DM with the bot.", show_alert=True)
         try:
-            # Use bot.send_message instead of reply for reliable disable_notification
             await bot.send_message(
-                chat_id=callback.message.chat.id,
-                text="❌ You must join the channel before voting!",
-                reply_markup=build_verify_join_keyboard(giveaway_id, username),
-                disable_notification=True,  # Silent message - no notification sound
-                reply_to_message_id=callback.message.message_id
+                chat_id=callback.from_user.id,
+                text=(
+                    "❌ <b>Your vote didn't count.</b>\n\n"
+                    "You need to join the channel first. Tap <b>Join Channel</b> below, "
+                    "then tap <b>I've Joined — Vote Now</b> to cast your vote."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_dm_join_vote_keyboard(giveaway_id, username, option_index),
             )
-            logger.warning(f"[VOTE] Silent 'must join' message sent to user {callback.from_user.id}")
+            logger.info(f"[VOTE] Sent 'must join' DM to user {callback.from_user.id}")
         except Exception as e:
-            logger.error(f"[VOTE] Failed to send 'must join' message: {e}")
+            logger.warning(f"[VOTE] Could not DM user {callback.from_user.id} (bot not started?): {e}")
         return
 
     # ── Check superadmin for unlimited votes ──────────────────
@@ -721,9 +730,11 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
             total_votes=updated.get("total_votes", 0),
             is_active=updated.get("is_active", True),
         )
+        _me = await bot.get_me()
         keyboard = build_vote_keyboard(
             giveaway_id, updated["options"],
-            is_active=updated.get("is_active", True)
+            is_active=updated.get("is_active", True),
+            bot_username=_me.username,
         )
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
@@ -746,6 +757,201 @@ async def handle_verify_join(callback: CallbackQuery, bot: Bot):
         await callback.message.delete()
     except Exception:
         await callback.answer("❌ Couldn't verify. Try again.", show_alert=True)
+
+
+# ─── DM voting (deep-link) ─────────────────────────────────────
+# Poll buttons are URL deep-links (t.me/<bot>?start=vote_<id>_<index>).
+# Tapping one opens a DM with the bot, which checks channel membership
+# there and records the vote there — nothing is ever posted in the
+# channel for a non-member, avoiding any channel spam.
+
+async def _refresh_poll_message(bot: Bot, giveaway_id: str):
+    """Re-render the poll message in its channel with up-to-date vote counts."""
+    try:
+        updated = await get_giveaway(giveaway_id)
+        if not updated:
+            return
+        votes_raw = updated.get("votes", {}) or {}
+        if isinstance(votes_raw, str):
+            import json as _j
+            try:
+                votes_raw = _j.loads(votes_raw)
+            except Exception:
+                votes_raw = {}
+        votes = {int(k): v for k, v in votes_raw.items()}
+        text = render_giveaway_message(
+            title=updated["title"],
+            prizes=updated.get("prizes", []),
+            options=updated["options"],
+            votes=votes,
+            total_votes=updated.get("total_votes", 0),
+            is_active=updated.get("is_active", True),
+        )
+        me = await bot.get_me()
+        keyboard = build_vote_keyboard(
+            giveaway_id, updated["options"],
+            is_active=updated.get("is_active", True),
+            bot_username=me.username,
+        )
+        channel_id = updated.get("channel_id")
+        message_id = updated.get("message_id")
+        if channel_id and message_id:
+            await bot.edit_message_text(
+                text, chat_id=channel_id, message_id=message_id,
+                reply_markup=keyboard, parse_mode="HTML",
+            )
+    except Exception as e:
+        logger.debug(f"_refresh_poll_message: skipped for {giveaway_id}: {e}")
+
+
+def _is_superadmin_voter(user_id: int) -> bool:
+    from config.settings import settings as _s
+    superadmin_ids = getattr(_s, "SUPERADMIN_IDS", [])
+    if isinstance(superadmin_ids, int):
+        superadmin_ids = [superadmin_ids]
+    elif not isinstance(superadmin_ids, (list, tuple, set)):
+        superadmin_ids = []
+    return int(user_id) in [int(x) for x in superadmin_ids]
+
+
+async def process_vote_deeplink(message: Message, bot: Bot, payload: str):
+    """
+    Handle a vote that arrived via /start vote_<giveaway_id>_<option_index>
+    (the user tapped a URL vote button in a poll and landed here in DM).
+    """
+    try:
+        _, giveaway_id, option_index_str = payload.split("_", 2)
+        option_index = int(option_index_str)
+    except (ValueError, IndexError):
+        await message.answer("❌ Invalid or expired vote link.")
+        return
+
+    giveaway = await get_giveaway(giveaway_id)
+    if not giveaway:
+        await message.answer("❌ This giveaway no longer exists.")
+        return
+    if not giveaway.get("is_active", False):
+        await message.answer("🔒 This poll is already closed.")
+        return
+
+    options = giveaway.get("options") or []
+    if option_index < 0 or option_index >= len(options):
+        await message.answer("❌ Invalid vote option.")
+        return
+
+    raw_channel_id = giveaway.get("channel_id", "")
+    try:
+        channel_id = int(raw_channel_id)
+    except (ValueError, TypeError):
+        channel_id = raw_channel_id
+
+    # ── Channel membership check (happens here in DM, never in-channel) ──
+    not_member = False
+    try:
+        member = await bot.get_chat_member(channel_id, message.from_user.id)
+        if member.status in ("left", "kicked"):
+            not_member = True
+    except Exception as e:
+        logger.warning(f"process_vote_deeplink: membership check error for {message.from_user.id}: {e}")
+        # Bot lacks permission to check — allow the vote rather than blocking everyone
+
+    if not_member:
+        try:
+            chat = await bot.get_chat(channel_id)
+            username = chat.username or str(raw_channel_id).lstrip("@")
+        except Exception:
+            username = str(raw_channel_id).lstrip("@")
+        await message.answer(
+            "❌ <b>Your vote didn't count.</b>\n\n"
+            "You need to join the channel first. Tap <b>Join Channel</b> below, "
+            "then tap <b>I've Joined — Vote Now</b> to cast your vote.",
+            parse_mode="HTML",
+            reply_markup=build_dm_join_vote_keyboard(giveaway_id, username, option_index),
+        )
+        return
+
+    if _is_superadmin_voter(message.from_user.id):
+        await record_vote_unlimited(
+            giveaway_id, message.from_user.id,
+            message.from_user.full_name, option_index
+        )
+    else:
+        voted = await record_vote(
+            giveaway_id, message.from_user.id,
+            message.from_user.full_name, option_index
+        )
+        if not voted:
+            await message.answer("⚠️ You've already voted in this giveaway!")
+            return
+
+    await message.answer(f"✅ <b>Vote recorded for:</b> {options[option_index]}", parse_mode="HTML")
+    await _refresh_poll_message(bot, giveaway_id)
+
+
+@router.callback_query(F.data.startswith("verify_vote:"))
+async def handle_verify_vote(callback: CallbackQuery, bot: Bot):
+    """DM-only: user tapped 'I've Joined — Vote Now' after joining the channel."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer("❌ Invalid data.", show_alert=True)
+        return
+    _, giveaway_id, option_index_str = parts
+    try:
+        option_index = int(option_index_str)
+    except ValueError:
+        await callback.answer("❌ Invalid option.", show_alert=True)
+        return
+
+    giveaway = await get_giveaway(giveaway_id)
+    if not giveaway:
+        await callback.answer("❌ Giveaway not found.", show_alert=True)
+        return
+    if not giveaway.get("is_active", False):
+        await callback.answer("🔒 This poll is already closed.", show_alert=True)
+        return
+
+    options = giveaway.get("options") or []
+    if option_index < 0 or option_index >= len(options):
+        await callback.answer("❌ Invalid option.", show_alert=True)
+        return
+
+    raw_channel_id = giveaway.get("channel_id", "")
+    try:
+        channel_id = int(raw_channel_id)
+    except (ValueError, TypeError):
+        channel_id = raw_channel_id
+
+    try:
+        member = await bot.get_chat_member(channel_id, callback.from_user.id)
+        if member.status in ("left", "kicked"):
+            await callback.answer("❌ You still haven't joined the channel!", show_alert=True)
+            return
+    except Exception as e:
+        logger.warning(f"handle_verify_vote: membership check error: {e}")
+        # Bot lacks permission — allow the vote rather than blocking everyone
+
+    if _is_superadmin_voter(callback.from_user.id):
+        await record_vote_unlimited(
+            giveaway_id, callback.from_user.id,
+            callback.from_user.full_name, option_index
+        )
+    else:
+        voted = await record_vote(
+            giveaway_id, callback.from_user.id,
+            callback.from_user.full_name, option_index
+        )
+        if not voted:
+            await callback.answer("⚠️ You've already voted!", show_alert=True)
+            return
+
+    await callback.answer(f"✅ Voted for: {options[option_index]}", show_alert=True)
+    try:
+        await callback.message.edit_text(
+            f"✅ <b>Vote recorded for:</b> {options[option_index]}", parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await _refresh_poll_message(bot, giveaway_id)
 
 
 @router.callback_query(F.data.startswith("close_poll:"))
@@ -874,7 +1080,8 @@ async def reopen_poll(message: Message, bot: Bot):
         options=updated["options"], votes=votes,
         total_votes=updated["total_votes"], is_active=True,
     )
-    keyboard = build_vote_keyboard(giveaway_id, updated["options"], is_active=True)
+    _me = await bot.get_me()
+    keyboard = build_vote_keyboard(giveaway_id, updated["options"], is_active=True, bot_username=_me.username)
     try:
         await bot.edit_message_text(
             text, chat_id=updated["channel_id"],
@@ -952,7 +1159,8 @@ async def _scheduled_post(giveaway_id: str, delay: float, bot: Bot):
         options=giveaway["options"], votes={},
         total_votes=0, is_active=True,
     )
-    keyboard = build_vote_keyboard(giveaway_id, giveaway["options"], is_active=True)
+    _me = await bot.get_me()
+    keyboard = build_vote_keyboard(giveaway_id, giveaway["options"], is_active=True, bot_username=_me.username)
     try:
         sent = await bot.send_message(
             giveaway["channel_id"], text, reply_markup=keyboard, parse_mode="HTML"
@@ -1110,9 +1318,11 @@ async def on_member_left(event: ChatMemberUpdated, bot: Bot):
                         total_votes=updated.get("total_votes", 0),
                         is_active=updated.get("is_active", True),
                     )
+                    _me = await bot.get_me()
                     keyboard = build_vote_keyboard(
                         giveaway["giveaway_id"], updated["options"],
-                        is_active=updated.get("is_active", True)
+                        is_active=updated.get("is_active", True),
+                        bot_username=_me.username,
                     )
                     await bot.edit_message_text(
                         text,
