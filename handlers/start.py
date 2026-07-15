@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
@@ -38,8 +38,20 @@ def _force_join_keyboard(channel_link: str) -> InlineKeyboardMarkup:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, bot: Bot):
     user = message.from_user
+
+    # ── Deep-link vote: /start vote_<giveaway_id>_<option_index> ──
+    # Poll vote buttons are URL links that open the bot here in DM, so
+    # membership checks and vote recording happen privately — never as
+    # a message posted back into the channel.
+    parts = (message.text or "").split(maxsplit=1)
+    payload = parts[1].strip() if len(parts) > 1 else ""
+    if payload.startswith("vote_"):
+        from handlers.giveaway import process_vote_deeplink
+        await process_vote_deeplink(message, bot, payload)
+        return
+
     try:
         from utils.log_utils import log_new_user, get_main_bot
         bot = get_main_bot()
