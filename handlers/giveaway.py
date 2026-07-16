@@ -12,8 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 logger = logging.getLogger(__name__)
 from models.giveaway import (
     create_giveaway, get_giveaway, record_vote, record_vote_unlimited,
-    close_giveaway, update_giveaway_message_id,
-    rename_option, add_option, set_option_blocked,
+    close_giveaway, update_giveaway_message_id
 )
 from utils.poll_renderer import (
     render_giveaway_message, build_vote_keyboard,
@@ -27,16 +26,11 @@ router = Router()
 class GiveawayForm(StatesGroup):
     channel_id          = State()
     title               = State()
-    prizes               = State()
+    prizes              = State()
     options             = State()
     end_time            = State()
     count_left_members  = State()
     confirm             = State()
-
-
-class ManageForm(StatesGroup):
-    rename_option = State()
-    add_option    = State()
 
 
 # ─── Shared keyboards ─────────────────────────────────────────
@@ -250,23 +244,20 @@ async def form_options(message: Message, state: FSMContext):
 async def handle_endtime_choice(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     choice = callback.data.split(":")[1]
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
     if choice == "no":
         await state.update_data(end_time=None)
-        await _ask_count_left(callback.message, state)
+    else:
+        await callback.message.answer(
+            "⏰ <b>Enter how long the poll should run:</b>\n\n"
+            "Examples:\n"
+            "<code>2h</code>  → 2 hours\n"
+            "<code>30m</code> → 30 minutes\n"
+            "<code>1d</code>  → 1 day",
+            parse_mode="HTML",
+            reply_markup=_cancel_keyboard(),
+        )
         return
-    await callback.message.answer(
-        "⏰ <b>Enter how long the poll should run:</b>\n\n"
-        "Examples:\n"
-        "<code>2h</code>  → 2 hours\n"
-        "<code>30m</code> → 30 minutes\n"
-        "<code>1d</code>  → 1 day",
-        parse_mode="HTML",
-        reply_markup=_cancel_keyboard(),
-    )
+    await _ask_count_left(callback.message, state)
 
 
 @router.message(GiveawayForm.end_time)
@@ -301,10 +292,6 @@ async def handle_countleft_choice(callback: CallbackQuery, state: FSMContext):
     choice = callback.data.split(":")[1]
     count_left = (choice == "yes")
     await state.update_data(count_left_members=count_left)
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
     await _show_preview(callback.message, state)
 
 
@@ -440,16 +427,11 @@ async def handle_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
         await callback.message.edit_text(
             f"✅ <b>Giveaway posted successfully!</b>\n\n"
-            f"🆔 <b>ID:</b> <code>{giveaway['giveaway_id']}</code>\n"
-            f"📊 <b>Your Analytics Panel:</b>\n"
+            f"🆔 <b>ID:</b> <code>{giveaway['giveaway_id']}</code>\n"            f"📊 <b>Your Analytics Panel:</b>\n"
             f"<a href=\"{panel_url}\">{panel_url}</a>\n\n"
-            f"You can rename, add, or block participants at any time — tap below:",
+            f"To close the poll manually, tap below:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="👥 Manage Participants",
-                    callback_data=f"manage:{giveaway['giveaway_id']}",
-                )],
                 [InlineKeyboardButton(
                     text="🔒 Close Poll",
                     callback_data=f"close_poll:{giveaway['giveaway_id']}",
@@ -483,7 +465,6 @@ async def _auto_close(giveaway_id: str, delay: float, bot: Bot):
         title=updated["title"], prizes=updated["prizes"],
         options=updated["options"], votes=votes,
         total_votes=updated["total_votes"], is_active=False,
-        blocked_options=updated.get("blocked_options") or [],
     )
     try:
         await bot.edit_message_text(
@@ -655,11 +636,6 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
         await callback.answer("❌ Invalid option index.", show_alert=True)
         return
 
-    # ── Blocked participant check ──────────────────────────────
-    if option_index in (giveaway.get("blocked_options") or []):
-        await callback.answer("🚫 This participant has been blocked by the host.", show_alert=True)
-        return
-
     # ── Resolve channel_id (may be int or str) ────────────────
     raw_channel_id = giveaway.get("channel_id", "")
     try:
@@ -746,7 +722,6 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
             except Exception:
                 votes_raw = {}
         votes = {int(k): v for k, v in votes_raw.items()}
-        blocked = updated.get("blocked_options") or []
         text = render_giveaway_message(
             title=updated["title"],
             prizes=updated.get("prizes", []),
@@ -754,14 +729,12 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
             votes=votes,
             total_votes=updated.get("total_votes", 0),
             is_active=updated.get("is_active", True),
-            blocked_options=blocked,
         )
         _me = await bot.get_me()
         keyboard = build_vote_keyboard(
             giveaway_id, updated["options"],
             is_active=updated.get("is_active", True),
             bot_username=_me.username,
-            blocked_options=blocked,
         )
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
@@ -806,7 +779,6 @@ async def _refresh_poll_message(bot: Bot, giveaway_id: str):
             except Exception:
                 votes_raw = {}
         votes = {int(k): v for k, v in votes_raw.items()}
-        blocked = updated.get("blocked_options") or []
         text = render_giveaway_message(
             title=updated["title"],
             prizes=updated.get("prizes", []),
@@ -814,14 +786,12 @@ async def _refresh_poll_message(bot: Bot, giveaway_id: str):
             votes=votes,
             total_votes=updated.get("total_votes", 0),
             is_active=updated.get("is_active", True),
-            blocked_options=blocked,
         )
         me = await bot.get_me()
         keyboard = build_vote_keyboard(
             giveaway_id, updated["options"],
             is_active=updated.get("is_active", True),
             bot_username=me.username,
-            blocked_options=blocked,
         )
         channel_id = updated.get("channel_id")
         message_id = updated.get("message_id")
@@ -867,10 +837,6 @@ async def process_vote_deeplink(message: Message, bot: Bot, payload: str):
     options = giveaway.get("options") or []
     if option_index < 0 or option_index >= len(options):
         await message.answer("❌ Invalid vote option.")
-        return
-
-    if option_index in (giveaway.get("blocked_options") or []):
-        await message.answer("🚫 This participant has been blocked by the host and can't receive votes.")
         return
 
     raw_channel_id = giveaway.get("channel_id", "")
@@ -949,10 +915,6 @@ async def handle_verify_vote(callback: CallbackQuery, bot: Bot):
         await callback.answer("❌ Invalid option.", show_alert=True)
         return
 
-    if option_index in (giveaway.get("blocked_options") or []):
-        await callback.answer("🚫 This participant has been blocked by the host.", show_alert=True)
-        return
-
     raw_channel_id = giveaway.get("channel_id", "")
     try:
         channel_id = int(raw_channel_id)
@@ -1013,7 +975,6 @@ async def handle_close_poll(callback: CallbackQuery, bot: Bot):
         title=updated["title"], prizes=updated["prizes"],
         options=updated["options"], votes=votes,
         total_votes=updated["total_votes"], is_active=False,
-        blocked_options=updated.get("blocked_options") or [],
     )
     try:
         await bot.edit_message_text(
@@ -1033,244 +994,6 @@ async def handle_close_poll(callback: CallbackQuery, bot: Bot):
     await _send_close_report(bot, updated, votes)
     await _dm_winner_if_allowed(bot, updated, votes)
     await _archive_giveaway(bot, giveaway_id, creator_id=giveaway.get("creator_id"))
-
-
-# ─── Participant management (rename / add / block) ─────────────
-# Available any time after a giveaway is posted — from the "Manage
-# Participants" button on the post-success message, or /manageparticipants.
-# • Rename & add never touch vote counts (indices are stable).
-# • Block hides the vote button and marks the entry — it doesn't delete
-#   the option or its existing votes, so indices/history stay intact.
-
-async def _is_giveaway_owner(giveaway: dict, user_id: int) -> bool:
-    if not giveaway:
-        return False
-    if int(giveaway.get("creator_id", 0)) == int(user_id):
-        return True
-    from config.settings import settings as _s
-    superadmin_ids = getattr(_s, "SUPERADMIN_IDS", [])
-    if isinstance(superadmin_ids, int):
-        superadmin_ids = [superadmin_ids]
-    elif not isinstance(superadmin_ids, (list, tuple, set)):
-        superadmin_ids = []
-    return int(user_id) in [int(x) for x in superadmin_ids]
-
-
-def _manage_list_keyboard(giveaway_id: str, options: list, blocked: list) -> InlineKeyboardMarkup:
-    blocked_set = set(blocked or [])
-    rows = []
-    for i, name in enumerate(options):
-        emoji = "🚫" if i in blocked_set else "👤"
-        label = f"{emoji} {name[:28]}"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"manage_opt:{giveaway_id}:{i}")])
-    rows.append([InlineKeyboardButton(text="➕ Add Participant", callback_data=f"manage_add:{giveaway_id}")])
-    rows.append([InlineKeyboardButton(text="✖️ Close", callback_data="manage_close")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _manage_option_keyboard(giveaway_id: str, index: int, is_blocked: bool) -> InlineKeyboardMarkup:
-    block_btn = (
-        InlineKeyboardButton(text="✅ Unblock", callback_data=f"manage_unblock:{giveaway_id}:{index}")
-        if is_blocked else
-        InlineKeyboardButton(text="🚫 Block", callback_data=f"manage_block:{giveaway_id}:{index}")
-    )
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Rename", callback_data=f"manage_rename:{giveaway_id}:{index}")],
-        [block_btn],
-        [InlineKeyboardButton(text="🔙 Back", callback_data=f"manage:{giveaway_id}")],
-    ])
-
-
-async def _show_manage_list(giveaway_id: str, edit_target) -> bool:
-    """Render the participant list. `edit_target` is a Message to edit_text on."""
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway:
-        await edit_target.edit_text("❌ Giveaway not found.")
-        return False
-    options = giveaway.get("options") or []
-    blocked = giveaway.get("blocked_options") or []
-    votes = giveaway.get("votes") or {}
-    lines = [
-        "👥 <b>Manage Participants</b>",
-        f"🆔 <code>{giveaway_id}</code>\n",
-        "Tap a participant to rename or block them, or add a new one.\n",
-    ]
-    for i, name in enumerate(options):
-        count = votes.get(i, votes.get(str(i), 0))
-        tag = " 🚫 blocked" if i in blocked else ""
-        lines.append(f"{i+1}. {name} — {count} votes{tag}")
-    await edit_target.edit_text(
-        "\n".join(lines), parse_mode="HTML",
-        reply_markup=_manage_list_keyboard(giveaway_id, options, blocked),
-    )
-    return True
-
-
-@router.message(Command("manageparticipants"))
-async def cmd_manage_participants(message: Message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Usage: <code>/manageparticipants GIVEAWAY_ID</code>", parse_mode="HTML")
-        return
-    giveaway_id = parts[1].strip()
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, message.from_user.id):
-        await message.answer("❌ Giveaway not found or you're not its owner.")
-        return
-    sent = await message.answer("Loading…")
-    await _show_manage_list(giveaway_id, sent)
-
-
-@router.callback_query(F.data.startswith("manage:"))
-async def manage_open(callback: CallbackQuery):
-    giveaway_id = callback.data.split(":")[1]
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, callback.from_user.id):
-        await callback.answer("❌ Not your giveaway.", show_alert=True)
-        return
-    await callback.answer()
-    await _show_manage_list(giveaway_id, callback.message)
-
-
-@router.callback_query(F.data == "manage_close")
-async def manage_close(callback: CallbackQuery):
-    await callback.answer()
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-
-async def _render_option_view(callback: CallbackQuery, giveaway_id: str, index: int):
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway:
-        return
-    options = giveaway.get("options") or []
-    if index < 0 or index >= len(options):
-        return
-    blocked = index in (giveaway.get("blocked_options") or [])
-    votes = giveaway.get("votes") or {}
-    count = votes.get(index, votes.get(str(index), 0))
-    await callback.message.edit_text(
-        f"👤 <b>{options[index]}</b>\n"
-        f"🗳 Votes: <b>{count}</b>\n"
-        f"Status: {'🚫 Blocked' if blocked else '✅ Active'}",
-        parse_mode="HTML",
-        reply_markup=_manage_option_keyboard(giveaway_id, index, blocked),
-    )
-
-
-@router.callback_query(F.data.startswith("manage_opt:"))
-async def manage_open_option(callback: CallbackQuery):
-    _, giveaway_id, index_str = callback.data.split(":")
-    index = int(index_str)
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, callback.from_user.id):
-        await callback.answer("❌ Not your giveaway.", show_alert=True)
-        return
-    await callback.answer()
-    await _render_option_view(callback, giveaway_id, index)
-
-
-@router.callback_query(F.data.startswith("manage_block:"))
-async def manage_block(callback: CallbackQuery, bot: Bot):
-    _, giveaway_id, index_str = callback.data.split(":")
-    index = int(index_str)
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, callback.from_user.id):
-        await callback.answer("❌ Not your giveaway.", show_alert=True)
-        return
-    await set_option_blocked(giveaway_id, index, True)
-    await callback.answer("🚫 Participant blocked.")
-    await _refresh_poll_message(bot, giveaway_id)
-    await _render_option_view(callback, giveaway_id, index)
-
-
-@router.callback_query(F.data.startswith("manage_unblock:"))
-async def manage_unblock(callback: CallbackQuery, bot: Bot):
-    _, giveaway_id, index_str = callback.data.split(":")
-    index = int(index_str)
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, callback.from_user.id):
-        await callback.answer("❌ Not your giveaway.", show_alert=True)
-        return
-    await set_option_blocked(giveaway_id, index, False)
-    await callback.answer("✅ Participant unblocked.")
-    await _refresh_poll_message(bot, giveaway_id)
-    await _render_option_view(callback, giveaway_id, index)
-
-
-@router.callback_query(F.data.startswith("manage_rename:"))
-async def manage_rename_start(callback: CallbackQuery, state: FSMContext):
-    _, giveaway_id, index_str = callback.data.split(":")
-    index = int(index_str)
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, callback.from_user.id):
-        await callback.answer("❌ Not your giveaway.", show_alert=True)
-        return
-    await callback.answer()
-    await state.set_state(ManageForm.rename_option)
-    await state.update_data(manage_giveaway_id=giveaway_id, manage_index=index)
-    await callback.message.edit_text(
-        "✏️ <b>Send the new name for this participant:</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data=f"manage_opt:{giveaway_id}:{index}")],
-        ]),
-    )
-
-
-@router.message(ManageForm.rename_option)
-async def manage_rename_apply(message: Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    giveaway_id = data.get("manage_giveaway_id")
-    index = data.get("manage_index")
-    new_name = message.text.strip()
-    if not new_name:
-        await message.answer("❌ Name can't be empty. Try again.")
-        return
-    await rename_option(giveaway_id, index, new_name)
-    await state.clear()
-    await _refresh_poll_message(bot, giveaway_id)
-    sent = await message.answer("✅ Renamed. Loading list…")
-    await _show_manage_list(giveaway_id, sent)
-
-
-@router.callback_query(F.data.startswith("manage_add:"))
-async def manage_add_start(callback: CallbackQuery, state: FSMContext):
-    giveaway_id = callback.data.split(":")[1]
-    giveaway = await get_giveaway(giveaway_id)
-    if not giveaway or not await _is_giveaway_owner(giveaway, callback.from_user.id):
-        await callback.answer("❌ Not your giveaway.", show_alert=True)
-        return
-    await callback.answer()
-    await state.set_state(ManageForm.add_option)
-    await state.update_data(manage_giveaway_id=giveaway_id)
-    await callback.message.edit_text(
-        "➕ <b>Send the name(s) of the new participant(s)</b> — one per line:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data=f"manage:{giveaway_id}")],
-        ]),
-    )
-
-
-@router.message(ManageForm.add_option)
-async def manage_add_apply(message: Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    giveaway_id = data.get("manage_giveaway_id")
-    names = [n.strip() for n in message.text.strip().split("\n") if n.strip()]
-    if not names:
-        await message.answer("❌ Enter at least one name.")
-        return
-    for name in names:
-        if await add_option(giveaway_id, name) is None:
-            await message.answer("⚠️ Reached the 50-participant limit — stopped adding.")
-            break
-    await state.clear()
-    await _refresh_poll_message(bot, giveaway_id)
-    sent = await message.answer(f"✅ Added {len(names)} participant(s). Loading list…")
-    await _show_manage_list(giveaway_id, sent)
 
 
 @router.message(Command("closegiveaway"))
@@ -1298,7 +1021,6 @@ async def cmd_close_giveaway(message: Message, bot: Bot):
         title=updated["title"], prizes=updated["prizes"],
         options=updated["options"], votes=votes,
         total_votes=updated["total_votes"], is_active=False,
-        blocked_options=updated.get("blocked_options") or [],
     )
     try:
         await bot.edit_message_text(
@@ -1353,15 +1075,13 @@ async def reopen_poll(message: Message, bot: Bot):
 
     updated  = await get_giveaway(giveaway_id)
     votes    = {int(k): v for k, v in updated.get("votes", {}).items()}
-    blocked  = updated.get("blocked_options") or []
     text     = render_giveaway_message(
         title=updated["title"], prizes=updated["prizes"],
         options=updated["options"], votes=votes,
         total_votes=updated["total_votes"], is_active=True,
-        blocked_options=blocked,
     )
     _me = await bot.get_me()
-    keyboard = build_vote_keyboard(giveaway_id, updated["options"], is_active=True, bot_username=_me.username, blocked_options=blocked)
+    keyboard = build_vote_keyboard(giveaway_id, updated["options"], is_active=True, bot_username=_me.username)
     try:
         await bot.edit_message_text(
             text, chat_id=updated["channel_id"],
@@ -1553,80 +1273,71 @@ async def on_member_left(event: ChatMemberUpdated, bot: Bot):
     try:
         from models.giveaway import get_active_giveaways_for_channel, remove_vote_for_user
         active = await get_active_giveaways_for_channel(channel_id)
-    except Exception as e:
-        logger.error(f"[MEMBER_LEFT] ❌ Failed to look up active giveaways for channel {channel_id}: {e}", exc_info=True)
-        return
-
-    logger.info(f"[MEMBER_LEFT] Found {len(active)} active giveaways in channel {channel_id}")
-
-    for giveaway in active:
-        # Each giveaway is handled independently — an error on one (e.g. a
-        # deleted poll message) must not stop the others in the same
-        # channel from having the leaving user's vote removed.
-        try:
+        
+        logger.warning(f"[MEMBER_LEFT] Found {len(active)} active giveaways in channel {channel_id}")
+        
+        for giveaway in active:
             count_left = giveaway.get("count_left_members", True)
-            if count_left:
-                continue  # this giveaway keeps votes even if the voter leaves
-
-            removed = await remove_vote_for_user(giveaway["giveaway_id"], user_id)
-            if not removed:
-                logger.info(
-                    f"[MEMBER_LEFT] No vote to remove for user={user_id} "
-                    f"in giveaway={giveaway['giveaway_id']} (didn't vote, or already removed)"
-                )
-                continue
-
-            logger.info(f"[MEMBER_LEFT] ✅ Vote removed: user={user_id}, giveaway={giveaway['giveaway_id']}")
-
-            # Refresh the poll message to reflect the updated vote count
-            try:
-                from models.giveaway import get_giveaway
-                updated = await get_giveaway(giveaway["giveaway_id"])
-                if not updated:
-                    continue
-                votes_raw = updated.get("votes", {}) or {}
-                if isinstance(votes_raw, str):
-                    import json as _j
-                    try:
-                        votes_raw = _j.loads(votes_raw)
-                    except Exception:
-                        votes_raw = {}
-                votes = {int(k): v for k, v in votes_raw.items()}
-                blocked = updated.get("blocked_options") or []
-                text = render_giveaway_message(
-                    title=updated["title"],
-                    prizes=updated.get("prizes", []),
-                    options=updated["options"],
-                    votes=votes,
-                    total_votes=updated.get("total_votes", 0),
-                    is_active=updated.get("is_active", True),
-                    blocked_options=blocked,
-                )
-                _me = await bot.get_me()
-                keyboard = build_vote_keyboard(
-                    giveaway["giveaway_id"], updated["options"],
-                    is_active=updated.get("is_active", True),
-                    bot_username=_me.username,
-                    blocked_options=blocked,
-                )
-                await bot.edit_message_text(
-                    text,
-                    chat_id=updated["channel_id"],
-                    message_id=updated["message_id"],
-                    reply_markup=keyboard,
-                    parse_mode="HTML",
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[MEMBER_LEFT] Vote was removed but poll message refresh failed "
-                    f"for giveaway={giveaway['giveaway_id']}: {e}"
-                )
-        except Exception as e:
-            logger.error(
-                f"[MEMBER_LEFT] ❌ Failed processing giveaway={giveaway.get('giveaway_id')}: {e}",
-                exc_info=True,
+            logger.warning(
+                f"[MEMBER_LEFT] Giveaway {giveaway['giveaway_id']}: "
+                f"count_left_members={count_left}"
             )
-            continue  # move on to the next giveaway regardless
+            
+            if count_left:
+                logger.warning(f"[MEMBER_LEFT] Skipping vote removal (count_left_members=True)")
+                continue
+            
+            logger.warning(f"[MEMBER_LEFT] Attempting to remove vote for user {user_id}...")
+            removed = await remove_vote_for_user(giveaway["giveaway_id"], user_id)
+            
+            if removed:
+                logger.warning(
+                    f"[MEMBER_LEFT] ✅ Vote removed successfully! "
+                    f"user={user_id}, giveaway={giveaway['giveaway_id']}"
+                )
+                # Refresh the poll message to reflect updated vote count
+                try:
+                    from models.giveaway import get_giveaway
+                    updated = await get_giveaway(giveaway["giveaway_id"])
+                    if not updated:
+                        logger.warning(f"[MEMBER_LEFT] Failed to fetch updated giveaway")
+                        continue
+                    votes_raw = updated.get("votes", {}) or {}
+                    if isinstance(votes_raw, str):
+                        import json as _j
+                        try:
+                            votes_raw = _j.loads(votes_raw)
+                        except Exception:
+                            votes_raw = {}
+                    votes = {int(k): v for k, v in votes_raw.items()}
+                    text = render_giveaway_message(
+                        title=updated["title"],
+                        prizes=updated.get("prizes", []),
+                        options=updated["options"],
+                        votes=votes,
+                        total_votes=updated.get("total_votes", 0),
+                        is_active=updated.get("is_active", True),
+                    )
+                    _me = await bot.get_me()
+                    keyboard = build_vote_keyboard(
+                        giveaway["giveaway_id"], updated["options"],
+                        is_active=updated.get("is_active", True),
+                        bot_username=_me.username,
+                    )
+                    await bot.edit_message_text(
+                        text,
+                        chat_id=updated["channel_id"],
+                        message_id=updated["message_id"],
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                    )
+                    logger.warning(f"[MEMBER_LEFT] ✅ Poll message updated successfully")
+                except Exception as e:
+                    logger.warning(f"[MEMBER_LEFT] ❌ Failed to update poll message: {e}")
+            else:
+                logger.warning(f"[MEMBER_LEFT] ❌ Vote removal returned False (user had no vote?)")
+    except Exception as e:
+        logger.error(f"[MEMBER_LEFT] ❌ FATAL ERROR: {e}", exc_info=True)
 
 
 # ─── /giveawayinfo <id> ────────────────────────────────────────
