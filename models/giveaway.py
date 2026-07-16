@@ -133,6 +133,10 @@ def _row_to_giveaway(row: dict) -> dict:
     row["is_active"] = bool(row["is_active"])
     row["allow_winner_dm"] = bool(row.get("allow_winner_dm", 0))
     row["count_left_members"] = bool(row.get("count_left_members", 1))
+    try:
+        row["blocked_options"] = json.loads(row.get("blocked_options") or "[]")
+    except Exception:
+        row["blocked_options"] = []
     return row
 
 
@@ -147,31 +151,30 @@ async def _sqlite_record_vote(giveaway_id, user_id, user_name, option_index):
         ) as cur:
             if await cur.fetchone():
                 return False
-        await conn.execute(
-            "INSERT INTO votes (giveaway_id, user_id, user_name, option_index, voted_at) VALUES (?,?,?,?,?)",
-            (giveaway_id, user_id, user_name, option_index, _now())
-        )
-        # Update votes JSON
-        async with conn.execute(
-            "SELECT votes, total_votes FROM giveaways WHERE giveaway_id=?", (giveaway_id,)
-        ) as cur:
-            row = await cur.fetchone()
-        if not row:
+        try:
+            await conn.execute(
+                "INSERT INTO votes (giveaway_id, user_id, user_name, option_index, voted_at) VALUES (?,?,?,?,?)",
+                (giveaway_id, user_id, user_name, option_index, _now())
+            )
+        except Exception:
+            # UNIQUE(giveaway_id, user_id) hit — another vote for this same
+            # user landed in the tiny window between our check and insert.
             await conn.commit()
-            return True
-        votes_raw = row[0] or "{}"
-        if isinstance(votes_raw, str):
-            try:
-                votes = json.loads(votes_raw)
-            except Exception:
-                votes = {}
-        else:
-            votes = votes_raw if isinstance(votes_raw, dict) else {}
-        key = str(option_index)
-        votes[key] = votes.get(key, 0) + 1
+            return False
+
+        # Atomic increment (single UPDATE via SQLite's JSON1 functions)
+        # instead of read-json-in-Python-then-write-back, so a concurrent
+        # vote/removal on the same giveaway can no longer clobber this one.
+        key_path = f'$."{option_index}"'
         await conn.execute(
-            "UPDATE giveaways SET votes=?, total_votes=? WHERE giveaway_id=?",
-            (json.dumps(votes), (row[1] or 0) + 1, giveaway_id)
+            """UPDATE giveaways
+               SET votes = json_set(
+                       COALESCE(votes, '{}'), ?,
+                       COALESCE(json_extract(votes, ?), 0) + 1
+                   ),
+                   total_votes = total_votes + 1
+               WHERE giveaway_id = ?""",
+            (key_path, key_path, giveaway_id)
         )
         await conn.commit()
     return True
@@ -211,15 +214,23 @@ async def create_giveaway(creator_id, channel_id, title, prizes, options,
 async def get_giveaway(giveaway_id: str):
     from utils.db import is_mongo
     if is_mongo():
-        return await _mongo_get(giveaway_id)
-    return await _sqlite_get(giveaway_id)
+        g = await _mongo_get(giveaway_id)
+    else:
+        g = await _sqlite_get(giveaway_id)
+    if g is not None and "blocked_options" not in g:
+        g["blocked_options"] = []
+    return g
 
 
 async def get_giveaway_by_message(message_id: int, channel_id: str):
     from utils.db import is_mongo
     if is_mongo():
-        return await _mongo_get_by_message(message_id, channel_id)
-    return await _sqlite_get_by_message(message_id, channel_id)
+        g = await _mongo_get_by_message(message_id, channel_id)
+    else:
+        g = await _sqlite_get_by_message(message_id, channel_id)
+    if g is not None and "blocked_options" not in g:
+        g["blocked_options"] = []
+    return g
 
 
 async def record_vote(giveaway_id: str, user_id: int, user_name: str, option_index: int) -> bool:
@@ -319,11 +330,12 @@ async def _mongo_remove_vote(giveaway_id: str, user_id: int) -> bool:
     """Remove a user's vote from a giveaway (called when user leaves channel)."""
     from utils.db import get_db
     db = get_db()
-    vote_doc = await db.votes.find_one({"giveaway_id": giveaway_id, "user_id": user_id})
+    # Atomic find+delete so two concurrent calls (e.g. duplicate leave
+    # events) can't both pass a find and both decrement the count.
+    vote_doc = await db.votes.find_one_and_delete({"giveaway_id": giveaway_id, "user_id": user_id})
     if not vote_doc:
         return False
     option_index = vote_doc["option_index"]
-    await db.votes.delete_one({"giveaway_id": giveaway_id, "user_id": user_id})
     key = str(option_index)
     await db.giveaways.update_one(
         {"giveaway_id": giveaway_id},
@@ -333,7 +345,16 @@ async def _mongo_remove_vote(giveaway_id: str, user_id: int) -> bool:
 
 
 async def _sqlite_remove_vote(giveaway_id: str, user_id: int) -> bool:
-    """Remove a user's vote from a giveaway (called when user leaves channel)."""
+    """Remove a user's vote from a giveaway (called when user leaves channel).
+
+    The count decrement is a single atomic UPDATE (via SQLite's JSON1
+    functions) instead of a Python read-modify-write. Previously two
+    near-simultaneous changes to the same giveaway (e.g. a new vote and a
+    departing member's vote removal) could race: both would read the same
+    `votes` JSON blob, edit their own copy, then write it back — whichever
+    write landed second silently erased the other's change. Doing the
+    increment/decrement inside one SQL statement removes that window.
+    """
     import aiosqlite
     from utils.db import get_sqlite_path
     path = get_sqlite_path()
@@ -346,27 +367,27 @@ async def _sqlite_remove_vote(giveaway_id: str, user_id: int) -> bool:
         if not row:
             return False
         option_index = row[0]
-        await conn.execute(
+
+        cur = await conn.execute(
             "DELETE FROM votes WHERE giveaway_id=? AND user_id=?",
             (giveaway_id, user_id)
         )
-        async with conn.execute(
-            "SELECT votes, total_votes FROM giveaways WHERE giveaway_id=?",
-            (giveaway_id,)
-        ) as cur:
-            grow = await cur.fetchone()
-        if grow:
-            try:
-                votes = json.loads(grow[0] or "{}")
-            except Exception:
-                votes = {}
-            key = str(option_index)
-            votes[key] = max(0, votes.get(key, 1) - 1)
-            new_total = max(0, (grow[1] or 1) - 1)
-            await conn.execute(
-                "UPDATE giveaways SET votes=?, total_votes=? WHERE giveaway_id=?",
-                (json.dumps(votes), new_total, giveaway_id)
-            )
+        if cur.rowcount == 0:
+            # Already removed by a concurrent call — nothing more to do
+            await conn.commit()
+            return False
+
+        key_path = f'$."{option_index}"'
+        await conn.execute(
+            """UPDATE giveaways
+               SET votes = json_set(
+                       COALESCE(votes, '{}'), ?,
+                       MAX(0, COALESCE(json_extract(votes, ?), 0) - 1)
+                   ),
+                   total_votes = MAX(0, total_votes - 1)
+               WHERE giveaway_id = ?""",
+            (key_path, key_path, giveaway_id)
+        )
         await conn.commit()
     return True
 
@@ -423,3 +444,98 @@ async def get_active_giveaways_for_channel(channel_id: str) -> list:
         for row in rows:
             results.append(_row_to_giveaway(dict(row)))
         return results
+
+
+# ─── PARTICIPANT MANAGEMENT (post-posting) ─────────────────────
+# These edit `options` / `blocked_options` in place, by index, so
+# existing vote counts (keyed by index) are never disturbed:
+#   • rename_option  — just changes the display text at that index
+#   • add_option     — appends a new option at the next free index
+#   • set_option_blocked — flags an index as blocked instead of
+#     deleting it, so historical votes stay intact and indices
+#     never shift
+
+async def rename_option(giveaway_id: str, index: int, new_name: str) -> bool:
+    from utils.db import is_mongo
+    giveaway = await get_giveaway(giveaway_id)
+    if not giveaway or index < 0 or index >= len(giveaway["options"]):
+        return False
+    options = list(giveaway["options"])
+    options[index] = new_name.strip()[:100]
+
+    if is_mongo():
+        from utils.db import get_db
+        await get_db().giveaways.update_one(
+            {"giveaway_id": giveaway_id}, {"$set": {"options": options}}
+        )
+    else:
+        import aiosqlite
+        from utils.db import get_sqlite_path
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            await conn.execute(
+                "UPDATE giveaways SET options=? WHERE giveaway_id=?",
+                (json.dumps(options), giveaway_id)
+            )
+            await conn.commit()
+    return True
+
+
+async def add_option(giveaway_id: str, name: str) -> Optional[int]:
+    """Append a new participant/option. Returns its new index, or None on failure."""
+    from utils.db import is_mongo
+    giveaway = await get_giveaway(giveaway_id)
+    if not giveaway:
+        return None
+    options = list(giveaway["options"])
+    if len(options) >= 50:
+        return None
+    options.append(name.strip()[:100])
+    new_index = len(options) - 1
+
+    if is_mongo():
+        from utils.db import get_db
+        await get_db().giveaways.update_one(
+            {"giveaway_id": giveaway_id}, {"$set": {"options": options}}
+        )
+    else:
+        import aiosqlite
+        from utils.db import get_sqlite_path
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            await conn.execute(
+                "UPDATE giveaways SET options=? WHERE giveaway_id=?",
+                (json.dumps(options), giveaway_id)
+            )
+            await conn.commit()
+    return new_index
+
+
+async def set_option_blocked(giveaway_id: str, index: int, blocked: bool) -> bool:
+    """Block/unblock a participant. Blocked participants keep their
+    existing votes and their slot in the list, but lose their vote
+    button and can't receive new votes."""
+    from utils.db import is_mongo
+    giveaway = await get_giveaway(giveaway_id)
+    if not giveaway or index < 0 or index >= len(giveaway["options"]):
+        return False
+    blocked_options = set(giveaway.get("blocked_options") or [])
+    if blocked:
+        blocked_options.add(index)
+    else:
+        blocked_options.discard(index)
+    blocked_list = sorted(blocked_options)
+
+    if is_mongo():
+        from utils.db import get_db
+        await get_db().giveaways.update_one(
+            {"giveaway_id": giveaway_id}, {"$set": {"blocked_options": blocked_list}}
+        )
+    else:
+        import aiosqlite
+        from utils.db import get_sqlite_path
+        async with aiosqlite.connect(get_sqlite_path()) as conn:
+            await conn.execute(
+                "UPDATE giveaways SET blocked_options=? WHERE giveaway_id=?",
+                (json.dumps(blocked_list), giveaway_id)
+            )
+            await conn.commit()
+    return True
